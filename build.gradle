@@ -1,0 +1,19 @@
+// Root build file — shared config for all subprojects.
+
+buildscript {
+    repositories {
+        mavenCentral()
+        gradlePluginPortal()
+        maven { url 'https://oss.sonatype.org/content/repositories/snapshots/' }
+    }
+}
+
+allprojects {
+    version = '1.0-SNAPSHOT'
+
+    repositories {
+        mavenCentral()
+        maven { url 'https://oss.sonatype.org/content/repositories/releases/' }
+        maven { url 'https://oss.sonatype.org/content/repositories/snapshots/' }
+    }
+}

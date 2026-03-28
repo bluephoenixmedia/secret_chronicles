@@ -1,0 +1,3 @@
+rootProject.name = 'IanGame'
+include 'core'
+include 'desktop'
