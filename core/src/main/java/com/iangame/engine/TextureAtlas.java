@@ -16,9 +16,11 @@ public class TextureAtlas {
     public static final int TEX_MASK = TEX_SIZE - 1; // safe wrap: TEX_SIZE is pow-2
 
     // wall textures indexed by map tile type (index 0 unused)
-    private final int[][] wall = new int[7][];
+    private final int[][] wall = new int[8][];
     public  final int[]   floor;
     public  final int[]   ceiling;
+    /** Billboard sprite for table objects (transparent background). */
+    public  final int[]   tableSprite;
 
     public TextureAtlas() {
         wall[0] = blank();
@@ -28,8 +30,10 @@ public class TextureAtlas {
         wall[4] = makePeelingWallpaper();
         wall[5] = makeRottingDoorWood();
         wall[6] = makeTerracotta();
-        floor   = makeWornFloorboards();
-        ceiling = makeWaterStainedCeiling();
+        wall[7] = makeDoorPanel();
+        floor       = makeWornFloorboards();
+        ceiling     = makeWaterStainedCeiling();
+        tableSprite = makeTableSprite();
     }
 
     /** Returns the texture for a wall tile type, falling back to type 1 if unknown. */
@@ -358,6 +362,56 @@ public class TextureAtlas {
         return t;
     }
 
+    // ── Wall type 7: aged door panel ─────────────────────────────────────────
+    //   Four-panel door design (2×2 grid of raised panels) in dark painted wood.
+    //   Heavy grain, age stains, small peeling spots.
+
+    private int[] makeDoorPanel() {
+        int[] t = new int[TEX_SIZE * TEX_SIZE];
+        for (int y = 0; y < TEX_SIZE; y++) {
+            for (int x = 0; x < TEX_SIZE; x++) {
+                int grain  = smooth(x, y, 2, 801);
+                int coarse = smooth(x, y, 8, 802);
+                int n      = hash(x, y, 803);
+
+                // Dark painted wood base
+                int r = 58 + (coarse >> 4) + (grain >> 5) - 6;
+                int g = 50 + (coarse >> 5) + (grain >> 6) - 3;
+                int b = 40 + (grain >> 6) + (n >> 7);
+
+                // 2×2 panel grid — each panel occupies a 32×32 sub-tile
+                int lx = x % 32, ly = y % 32;
+                boolean onFrame = (lx < 4 || lx > 27 || ly < 4 || ly > 27);
+                if (onFrame) {
+                    r -= 12; g -= 9; b -= 6;  // frame: darker, worn
+                } else {
+                    r += 16; g += 12; b += 8; // panel recess: slightly lighter
+                }
+
+                // Raised inner rim of each panel
+                if (lx == 4 || lx == 27 || ly == 4 || ly == 27) {
+                    r += 22; g += 16; b += 10;
+                }
+
+                // Vertical wood grain
+                if (hash(x, y * 2, 804) > 210) { r -= 16; g -= 11; b -= 7; }
+                if (hash(x, y * 3, 805) > 250) { r = 14;  g = 9;   b = 4; }
+
+                // Age stains / grime
+                int stain = smooth(x, y, 14, 806);
+                if (stain > 185) { r -= 10; g -= 8; b -= 5; }
+
+                // Peeling paint spots
+                if (smooth(x + 7, y + 7, 11, 807) > 202 && n > 200) {
+                    r += 20; g += 16; b += 10;
+                }
+
+                t[y * TEX_SIZE + x] = rgba(r, g, b);
+            }
+        }
+        return t;
+    }
+
     // ── Ceiling: water-stained plaster ────────────────────────────────────────
     //   Off-white cream, brownish concentric water-ring stains, fine cracks.
 
@@ -395,6 +449,79 @@ public class TextureAtlas {
                 if (hash(x * 2, y, 704) > 250) { r = 158; g = 150; b = 140; }
 
                 t[y * TEX_SIZE + x] = rgba(r, g, b);
+            }
+        }
+        return t;
+    }
+
+    // ── Table billboard sprite ─────────────────────────────────────────────────
+    //   64×64 with transparent (0x00000000) background.
+    //   Sprite y=32 maps to the player's eye level; y=63 maps to the floor.
+    //   The table top sits just below eye level (sprite y≈36-44), legs below (y≈45-63).
+    //   A small book and candle rest on the surface.
+
+    private int[] makeTableSprite() {
+        int[] t = new int[TEX_SIZE * TEX_SIZE]; // all zero = fully transparent
+
+        for (int y = 0; y < TEX_SIZE; y++) {
+            for (int x = 0; x < TEX_SIZE; x++) {
+
+                // ── Geometry flags ────────────────────────────────────────────
+                boolean topSurface = (y >= 36 && y <= 44 && x >= 4  && x <= 60);
+                boolean topEdge    = (y == 36 && x >= 4  && x <= 60);
+                boolean legLeft    = (y >= 45 && y <= 63 && x >= 8  && x <= 15);
+                boolean legRight   = (y >= 45 && y <= 63 && x >= 49 && x <= 56);
+                boolean stretcher  = (y >= 53 && y <= 56 && x >= 15 && x <= 49);
+                // book on table (left side)
+                boolean book       = (y >= 29 && y <= 36 && x >= 15 && x <= 27);
+                boolean bookEdge   = book && (y == 29 || y == 36 || x == 15 || x == 27);
+                // candle body (right side)
+                boolean candle     = (y >= 25 && y <= 36 && x >= 38 && x <= 43);
+                // flame above candle
+                boolean flame      = (y >= 19 && y <= 25 && x >= 39 && x <= 42);
+                boolean flameTip   = (y == 19 && x >= 40 && x <= 41);
+
+                int r = 0, g = 0, b = 0, a = 0;
+
+                if (topSurface || legLeft || legRight || stretcher) {
+                    int grain  = smooth(x, y, 3, 910);
+                    int coarse = smooth(x, y, 9, 911);
+                    int n      = hash(x, y, 912);
+                    r = 105 + (coarse >> 4) + (grain >> 5) - 8;
+                    g =  68 + (coarse >> 5) + (grain >> 6) - 4;
+                    b =  32 + (grain >> 6) + (n >> 7);
+                    if (topEdge)                          { r -= 28; g -= 20; b -= 10; }
+                    if (hash(x, y * 2, 913) > 215)        { r -= 16; g -= 11; b -= 6; }
+                    if (hash(x * 2, y, 914) > 248)        { r = 18;  g = 11;  b =  5; }
+                    a = 0xFF;
+
+                } else if (book) {
+                    int n = hash(x, y, 915);
+                    r = bookEdge ? 28 : (52 + (n >> 5));
+                    g = bookEdge ? 18 : (35 + (n >> 6));
+                    b = bookEdge ? 10 : (18 + (n >> 7));
+                    a = 0xFF;
+
+                } else if (candle) {
+                    // Cream/ivory candle body with subtle wax texture
+                    int n = hash(x, y, 916);
+                    r = 215 + (n >> 5) - 8;
+                    g = 195 + (n >> 5) - 8;
+                    b = 155 + (n >> 5) - 4;
+                    // Rim shadow
+                    if (x == 38 || x == 43) { r -= 30; g -= 25; b -= 18; }
+                    a = 0xFF;
+
+                } else if (flame) {
+                    // Orange-yellow flame, brighter at tip
+                    int n = hash(x, y, 917);
+                    r = 255;
+                    g = flameTip ? 220 : (140 + (n >> 4) - 8);
+                    b = flameTip ?  60 : 10;
+                    a = 0xFF;
+                }
+
+                t[y * TEX_SIZE + x] = (r << 24) | (g << 16) | (b << 8) | a;
             }
         }
         return t;

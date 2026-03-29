@@ -17,6 +17,8 @@ import com.badlogic.gdx.scenes.scene2d.utils.ChangeListener;
 import com.badlogic.gdx.scenes.scene2d.utils.ClickListener;
 import com.badlogic.gdx.scenes.scene2d.utils.TextureRegionDrawable;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
+import com.iangame.engine.DoorManager;
+import com.iangame.engine.RayCaster;
 import com.iangame.player.Player;
 import com.iangame.renderer.GameRenderer;
 import com.iangame.world.GameMap;
@@ -44,6 +46,9 @@ import com.iangame.world.GameMap;
  */
 public class IanGame extends ApplicationAdapter {
 
+    /** Collision radius around each table centre (world units). */
+    private static final double TABLE_RADIUS = 0.42;
+
     private static final float SENSITIVITY_MIN     = 0.0005f;
     private static final float SENSITIVITY_MAX     = 0.008f;
     private static final float SENSITIVITY_DEFAULT = 0.0025f;
@@ -52,6 +57,7 @@ public class IanGame extends ApplicationAdapter {
     private GameMap      map;
     private Player       player;
     private GameRenderer renderer;
+    private DoorManager  doorManager;
 
     private float  mouseSensitivity = SENSITIVITY_DEFAULT;
 
@@ -64,9 +70,10 @@ public class IanGame extends ApplicationAdapter {
 
     @Override
     public void create() {
-        map      = new GameMap();
-        player   = new Player(2.5, 2.5);
-        renderer = new GameRenderer();
+        map         = new GameMap();
+        player      = new Player(2.5, 2.5);
+        renderer    = new GameRenderer();
+        doorManager = new DoorManager(map);
 
         buildSettingsUI();
         Gdx.input.setInputProcessor(settingsStage);
@@ -79,7 +86,9 @@ public class IanGame extends ApplicationAdapter {
         float dt = Gdx.graphics.getDeltaTime();
 
         handleInput(dt);
-        renderer.render(player, map);
+        doorManager.update(dt);
+        renderer.update(dt);
+        renderer.render(player, map, doorManager);
 
         if (!Gdx.input.isCursorCatched()) {
             settingsStage.act(dt);
@@ -111,15 +120,19 @@ public class IanGame extends ApplicationAdapter {
 
         // Forward / backward
         if (Gdx.input.isKeyPressed(Keys.W) || Gdx.input.isKeyPressed(Keys.UP))
-            player.move(1.0, dt, map.getGrid());
+            movePlayer(1.0, dt);
         if (Gdx.input.isKeyPressed(Keys.S) || Gdx.input.isKeyPressed(Keys.DOWN))
-            player.move(-1.0, dt, map.getGrid());
+            movePlayer(-1.0, dt);
 
         // Strafe
         if (Gdx.input.isKeyPressed(Keys.A))
             strafe(-1.0, dt);
         if (Gdx.input.isKeyPressed(Keys.D))
             strafe(1.0, dt);
+
+        // Interact with door
+        if (Gdx.input.isKeyJustPressed(Keys.E))
+            doorManager.tryInteract(player.x, player.y, player.dirX, player.dirY);
 
         // Keyboard rotate
         if (Gdx.input.isKeyPressed(Keys.LEFT))
@@ -135,18 +148,38 @@ public class IanGame extends ApplicationAdapter {
         }
     }
 
-    /**
-     * Strafes the player perpendicular to their view direction.
-     * The strafe direction is the camera plane vector (already perpendicular to dir).
-     */
+    /** Moves the player forward (+1) or backward (-1), respecting walls, doors, and tables. */
+    private void movePlayer(double delta, double dt) {
+        double speed = player.moveSpeed * delta * dt;
+        double newX  = player.x + player.dirX * speed;
+        double newY  = player.y + player.dirY * speed;
+        if (isWalkable((int) newX, (int) player.y) && !tableBlocks(newX, player.y)) player.x = newX;
+        if (isWalkable((int) player.x, (int) newY) && !tableBlocks(player.x, newY)) player.y = newY;
+    }
+
+    /** Strafes the player perpendicular to their view direction, respecting walls, doors, and tables. */
     private void strafe(double delta, double dt) {
         double speed = player.moveSpeed * delta * dt;
         double newX  = player.x + player.planeX * speed;
         double newY  = player.y + player.planeY * speed;
+        if (isWalkable((int) newX, (int) player.y) && !tableBlocks(newX, player.y)) player.x = newX;
+        if (isWalkable((int) player.x, (int) newY) && !tableBlocks(player.x, newY)) player.y = newY;
+    }
 
-        int[][] grid = map.getGrid();
-        if (grid[(int) player.y][(int) newX] == 0) player.x = newX;
-        if (grid[(int) newY][(int) player.x] == 0) player.y = newY;
+    /** Empty tiles and sufficiently-open doors are walkable. */
+    private boolean isWalkable(int col, int row) {
+        int cell = map.getCell(col, row);
+        return cell == 0 || (cell == 7 && doorManager.isPassable(col, row));
+    }
+
+    /** Returns true if the given position is within TABLE_RADIUS of any table. */
+    private boolean tableBlocks(double x, double y) {
+        double r2 = TABLE_RADIUS * TABLE_RADIUS;
+        for (float[] t : RayCaster.TABLES) {
+            double dx = x - t[0], dy = y - t[1];
+            if (dx * dx + dy * dy < r2) return true;
+        }
+        return false;
     }
 
     // ── Settings UI ───────────────────────────────────────────────────────────

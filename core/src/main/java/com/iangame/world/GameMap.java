@@ -12,6 +12,7 @@ package com.iangame.world;
  *   <li>4 — white marble</li>
  *   <li>5 — dark wood (door frames)</li>
  *   <li>6 — terracotta</li>
+ *   <li>7 — door (interactive, rendered by DoorManager)</li>
  * </ul>
  *
  * <p>The outer border must always be walled (non-zero) to prevent rays from
@@ -21,8 +22,8 @@ public class GameMap {
 
     // ── Default map (36×36) ───────────────────────────────────────────────────
     //
-    // Nine rooms of three different sizes in a 3×3 grid, connected by 2-tile-wide
-    // corridors.  Structural gaps between rooms are filled with type-1 brick.
+    // Nine rooms in a 3×3 grid, connected by narrow 1-tile-wide corridors.
+    // Structural gaps between rooms are filled with type-1 brick.
     //
     // Column bands  │  Row bands
     //  band 0: c1-8  (w=8, interior 6)    band 0: r1-8  (h=8, interior 6)
@@ -36,9 +37,10 @@ public class GameMap {
     //  (1,0) white(4)  (1,1) terracotta(6)  (1,2) grey(2)
     //  (2,0) moss(3)   (2,1) white(4)       (2,2) terracotta(6)
     //
-    // H-corridors at rows 4-5, 17-18, 30-31.
-    // V-corridors at cols 4-5, 18-19, 31-32.
-    // Door frames (type 5) are the wall tiles immediately flanking each opening.
+    // H-corridors (1-tile wide) at rows 4, 17, 30.
+    // V-corridors (1-tile wide) at cols 4, 18, 31.
+    // Door tiles (type 7) at gap midpoints: H-doors at cols 10,26; V-doors at rows 10,24.
+    // Door frames (type 5) flank every opening in the room walls.
     // Player spawns at (2.5, 2.5) — interior of room (0,0).
 
     private static final int[][] DEFAULT_MAP = {
@@ -46,64 +48,63 @@ public class GameMap {
         {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
         // row 1 — top walls: grey(c1-8) | terracotta(c13-24) | moss(c28-34)
         {1,2,2,2,2,2,2,2,2,1,1,1,1,6,6,6,6,6,6,6,6,6,6,6,6,1,1,1,3,3,3,3,3,3,3,1},
-        // row 2 — interior (no door frames yet)
+        // row 2 — interior
         {1,2,0,0,0,0,0,0,2,1,1,1,1,6,0,0,0,0,0,0,0,0,0,0,6,1,1,1,3,0,0,0,0,0,3,1},
-        // row 3 — interior + door frames flanking H-corridor (rows 4-5)
-        //         c8, c13, c24, c28 → type 5
+        // row 3 — door frames above H-corridor (c8,c13,c24,c28 → type 5)
         {1,2,0,0,0,0,0,0,5,1,1,1,1,5,0,0,0,0,0,0,0,0,0,0,5,1,1,1,5,0,0,0,0,0,3,1},
-        // rows 4-5 — H-corridor through row band 0
-        {1,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,1},
-        {1,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,1},
-        // row 6 — interior + door frames flanking H-corridor (rows 4-5)
+        // row 4 — H-corridor (1-tile wide); doors at c10 and c26
+        {1,2,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0,3,1},
+        // row 5 — door frames below H-corridor
         {1,2,0,0,0,0,0,0,5,1,1,1,1,5,0,0,0,0,0,0,0,0,0,0,5,1,1,1,5,0,0,0,0,0,3,1},
+        // row 6 — interior
+        {1,2,0,0,0,0,0,0,2,1,1,1,1,6,0,0,0,0,0,0,0,0,0,0,6,1,1,1,3,0,0,0,0,0,3,1},
         // row 7 — interior
         {1,2,0,0,0,0,0,0,2,1,1,1,1,6,0,0,0,0,0,0,0,0,0,0,6,1,1,1,3,0,0,0,0,0,3,1},
-        // row 8 — bottom walls + V-corridor doors (cols 4-5, 18-19, 31-32)
-        //         door frames at c3,c6 | c17,c20 | c30,c33
-        {1,2,2,5,0,0,5,2,2,1,1,1,1,6,6,6,6,5,0,0,5,6,6,6,6,1,1,1,3,3,5,0,0,5,3,1},
-        // rows 9-12 — V-corridor band; passage at cols 4-5, 18-19, 31-32
-        {1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1},
-        {1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1},
-        {1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1},
-        {1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1},
-        // row 13 — top walls + V-corridor doors + door frames
-        //          white(c1-8) | terracotta(c13-24) | grey(c28-34)
-        {1,4,4,5,0,0,5,4,4,1,1,1,1,6,6,6,6,5,0,0,5,6,6,6,6,1,1,1,2,2,5,0,0,5,2,1},
+        // row 8 — bottom walls + V-corridor openings (c4, c18, c31); frames at c3,c5 | c17,c19 | c30,c32
+        {1,2,2,5,0,5,2,2,2,1,1,1,1,6,6,6,6,5,0,5,6,6,6,6,6,1,1,1,3,3,5,0,5,3,3,1},
+        // rows 9,11,12 — V-corridor gap band A; passage at c4, c18, c31
+        {1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1},
+        // row 10 — doors in V-corridor gap A
+        {1,1,1,1,7,1,1,1,1,1,1,1,1,1,1,1,1,1,7,1,1,1,1,1,1,1,1,1,1,1,1,7,1,1,1,1},
+        {1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1},
+        {1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1},
+        // row 13 — top walls band 1 + V-corridor openings; white(c1-8) | terra(c13-24) | grey(c28-34)
+        {1,4,4,5,0,5,4,4,4,1,1,1,1,6,6,6,6,5,0,5,6,6,6,6,6,1,1,1,2,2,5,0,5,2,2,1},
         // rows 14-15 — interior
         {1,4,0,0,0,0,0,0,4,1,1,1,1,6,0,0,0,0,0,0,0,0,0,0,6,1,1,1,2,0,0,0,0,0,2,1},
         {1,4,0,0,0,0,0,0,4,1,1,1,1,6,0,0,0,0,0,0,0,0,0,0,6,1,1,1,2,0,0,0,0,0,2,1},
-        // row 16 — interior + door frames flanking H-corridor (rows 17-18)
+        // row 16 — door frames above H-corridor row 17
         {1,4,0,0,0,0,0,0,5,1,1,1,1,5,0,0,0,0,0,0,0,0,0,0,5,1,1,1,5,0,0,0,0,0,2,1},
-        // rows 17-18 — H-corridor through row band 1
-        {1,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,1},
-        {1,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,1},
-        // row 19 — interior + door frames flanking H-corridor (rows 17-18)
+        // row 17 — H-corridor band 1; doors at c10 and c26
+        {1,4,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0,2,1},
+        // row 18 — door frames below H-corridor row 17
         {1,4,0,0,0,0,0,0,5,1,1,1,1,5,0,0,0,0,0,0,0,0,0,0,5,1,1,1,5,0,0,0,0,0,2,1},
-        // rows 20-21 — interior
+        // rows 19-21 — interior
         {1,4,0,0,0,0,0,0,4,1,1,1,1,6,0,0,0,0,0,0,0,0,0,0,6,1,1,1,2,0,0,0,0,0,2,1},
         {1,4,0,0,0,0,0,0,4,1,1,1,1,6,0,0,0,0,0,0,0,0,0,0,6,1,1,1,2,0,0,0,0,0,2,1},
-        // row 22 — bottom walls + V-corridor doors + door frames
-        {1,4,4,5,0,0,5,4,4,1,1,1,1,6,6,6,6,5,0,0,5,6,6,6,6,1,1,1,2,2,5,0,0,5,2,1},
-        // rows 23-25 — V-corridor band
-        {1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1},
-        {1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1},
-        {1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1},
-        // row 26 — top walls + V-corridor doors + door frames
-        //          moss(c1-8) | white(c13-24) | terracotta(c28-34)
-        {1,3,3,5,0,0,5,3,3,1,1,1,1,4,4,4,4,5,0,0,5,4,4,4,4,1,1,1,6,6,5,0,0,5,6,1},
+        {1,4,0,0,0,0,0,0,4,1,1,1,1,6,0,0,0,0,0,0,0,0,0,0,6,1,1,1,2,0,0,0,0,0,2,1},
+        // row 22 — bottom walls band 1 + V-corridor openings
+        {1,4,4,5,0,5,4,4,4,1,1,1,1,6,6,6,6,5,0,5,6,6,6,6,6,1,1,1,2,2,5,0,5,2,2,1},
+        // rows 23,25 — V-corridor gap band B; passage at c4, c18, c31
+        {1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1},
+        // row 24 — doors in V-corridor gap B
+        {1,1,1,1,7,1,1,1,1,1,1,1,1,1,1,1,1,1,7,1,1,1,1,1,1,1,1,1,1,1,1,7,1,1,1,1},
+        {1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1},
+        // row 26 — top walls band 2 + V-corridor openings; moss(c1-8) | white(c13-24) | terra(c28-34)
+        {1,3,3,5,0,5,3,3,3,1,1,1,1,4,4,4,4,5,0,5,4,4,4,4,4,1,1,1,6,6,5,0,5,6,6,1},
         // rows 27-28 — interior
         {1,3,0,0,0,0,0,0,3,1,1,1,1,4,0,0,0,0,0,0,0,0,0,0,4,1,1,1,6,0,0,0,0,0,6,1},
         {1,3,0,0,0,0,0,0,3,1,1,1,1,4,0,0,0,0,0,0,0,0,0,0,4,1,1,1,6,0,0,0,0,0,6,1},
-        // row 29 — interior + door frames flanking H-corridor (rows 30-31)
+        // row 29 — door frames above H-corridor row 30
         {1,3,0,0,0,0,0,0,5,1,1,1,1,5,0,0,0,0,0,0,0,0,0,0,5,1,1,1,5,0,0,0,0,0,6,1},
-        // rows 30-31 — H-corridor through row band 2
-        {1,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,1},
-        {1,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,1},
-        // row 32 — interior + door frames flanking H-corridor (rows 30-31)
+        // row 30 — H-corridor band 2; doors at c10 and c26
+        {1,3,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0,6,1},
+        // row 31 — door frames below H-corridor row 30
         {1,3,0,0,0,0,0,0,5,1,1,1,1,5,0,0,0,0,0,0,0,0,0,0,5,1,1,1,5,0,0,0,0,0,6,1},
-        // row 33 — interior
+        // rows 32-33 — interior
         {1,3,0,0,0,0,0,0,3,1,1,1,1,4,0,0,0,0,0,0,0,0,0,0,4,1,1,1,6,0,0,0,0,0,6,1},
-        // row 34 — bottom walls
+        {1,3,0,0,0,0,0,0,3,1,1,1,1,4,0,0,0,0,0,0,0,0,0,0,4,1,1,1,6,0,0,0,0,0,6,1},
+        // row 34 — bottom outer walls
         {1,3,3,3,3,3,3,3,3,1,1,1,1,4,4,4,4,4,4,4,4,4,4,4,4,1,1,1,6,6,6,6,6,6,6,1},
         // row 35 — outer border
         {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
@@ -120,6 +121,7 @@ public class GameMap {
         0xDDDDDDFF,   // 4 - white marble
         0x5C3317FF,   // 5 - dark wood   (door frames)
         0xBB5533FF,   // 6 - terracotta
+        0x7A4A28FF,   // 7 - door panel  (aged painted wood)
     };
 
     // ── Fields ────────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
 import com.badlogic.gdx.utils.Disposable;
 import com.badlogic.gdx.utils.viewport.FitViewport;
+import com.iangame.engine.DoorManager;
 import com.iangame.engine.RayCaster;
 import com.iangame.player.Player;
 import com.iangame.world.GameMap;
@@ -75,6 +76,11 @@ public class GameRenderer implements Disposable {
         viewport.update(width, height, true);
     }
 
+    /** Advances light flicker animations. Call once per frame before {@link #render}. */
+    public void update(float dt) {
+        rayCaster.update(dt);
+    }
+
     // ── Public API ────────────────────────────────────────────────────────────
 
     /**
@@ -82,10 +88,11 @@ public class GameRenderer implements Disposable {
      *
      * @param player  current player state
      * @param map     world map
+     * @param doors   door state manager (may be null)
      */
-    public void render(Player player, GameMap map) {
+    public void render(Player player, GameMap map, DoorManager doors) {
         // 1. Raycast into CPU buffer.
-        rayCaster.render(player, map, pixels);
+        rayCaster.render(player, map, doors, pixels);
 
         // 2. Upload pixels to Pixmap, then to Texture.
         uploadPixels();
@@ -105,7 +112,7 @@ public class GameRenderer implements Disposable {
         batch.end();
 
         // 5. Minimap overlay.
-        if (SHOW_MINIMAP) renderMinimap(player, map);
+        if (SHOW_MINIMAP) renderMinimap(player, map, doors);
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -125,7 +132,7 @@ public class GameRenderer implements Disposable {
     }
 
     /** Draws a top-down minimap in the bottom-left corner of the viewport. */
-    private void renderMinimap(Player player, GameMap map) {
+    private void renderMinimap(Player player, GameMap map, DoorManager doors) {
         shapes.setProjectionMatrix(camera.combined);
         int[][] grid = map.getGrid();
         int offX = MINIMAP_PAD;
@@ -135,10 +142,17 @@ public class GameRenderer implements Disposable {
 
         for (int row = 0; row < map.height; row++) {
             for (int col = 0; col < map.width; col++) {
-                if (grid[row][col] > 0) {
-                    shapes.setColor(0.6f, 0.6f, 0.6f, 0.85f);
+                int tile = grid[row][col];
+                if (tile == 7) {
+                    // Door: amber when closed, green when open
+                    float open = (doors != null) ? doors.getOpenAmount(col, row) : 0f;
+                    shapes.setColor(1f - open * 0.6f, 0.55f + open * 0.35f, 0.0f, 0.95f);
+                } else if (tile == 5) {
+                    shapes.setColor(0.4f, 0.25f, 0.1f, 0.85f);  // dark wood frames
+                } else if (tile > 0) {
+                    shapes.setColor(0.55f, 0.55f, 0.55f, 0.85f);
                 } else {
-                    shapes.setColor(0.1f, 0.1f, 0.1f, 0.7f);
+                    shapes.setColor(0.08f, 0.08f, 0.08f, 0.7f);
                 }
                 shapes.rect(
                     offX + col * MINIMAP_TILE,
