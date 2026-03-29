@@ -30,6 +30,11 @@ public class DoorManager {
     // Key: col * 10000 + row  (handles any reasonable map size)
     private final Map<Integer, Door> doors = new HashMap<>();
 
+    /** When true, open doors ignore their auto-close timer and stay open. */
+    private boolean lockOpen = false;
+
+    public void setLockOpen(boolean lock) { this.lockOpen = lock; }
+
     // ── Constructor ───────────────────────────────────────────────────────────
 
     /** Scans {@code map} for tile type 7 and registers a door at each position. */
@@ -93,6 +98,26 @@ public class DoorManager {
         }
     }
 
+    // ── Commands ──────────────────────────────────────────────────────────────
+
+    /** Starts closing every door that is currently open or opening. */
+    public void closeAll() {
+        for (Door d : doors.values()) {
+            if (d.state == DoorState.OPENING || d.state == DoorState.OPEN) {
+                d.state = DoorState.CLOSING;
+            }
+        }
+    }
+
+    /** Starts opening every door that is currently closed or closing. */
+    public void openAll() {
+        for (Door d : doors.values()) {
+            if (d.state == DoorState.CLOSED || d.state == DoorState.CLOSING) {
+                d.state = DoorState.OPENING;
+            }
+        }
+    }
+
     // ── Update ────────────────────────────────────────────────────────────────
 
     public void update(float dt) {
@@ -106,9 +131,9 @@ public class DoorManager {
                     }
                     break;
                 case OPEN:
-                    d.closeTimer -= dt;
-                    if (d.closeTimer <= 0f) {
-                        d.state = DoorState.CLOSING;
+                    if (!lockOpen) {
+                        d.closeTimer -= dt;
+                        if (d.closeTimer <= 0f) d.state = DoorState.CLOSING;
                     }
                     break;
                 case CLOSING:

@@ -59,23 +59,36 @@ public class IanGame extends ApplicationAdapter {
     private GameRenderer renderer;
     private DoorManager  doorManager;
 
-    private float   mouseSensitivity = SENSITIVITY_DEFAULT;
-    private boolean flashlightOn     = false;
+    private float   mouseSensitivity    = SENSITIVITY_DEFAULT;
+    private boolean flashlightOn        = false;
+    private float   timeSinceStart        = 0f;
+    private boolean flashlightEverUsed   = false;
+    private int     flashlightOnCount    = 0;
+    private boolean doorEverInteracted   = false;
+    private boolean thirtySecEventFired  = false;
+    private float   eventFiredAt        = -1f;
+    private int     flickerRoomIdx      = -1;
+    private boolean lightsOutFired      = false;
+    private boolean lightsOut           = false;
+    private float   lightsOutAt         = -1f;
     /** Battery level 0..1; drains while flashlight is on (~3 minutes total). */
     private float   batteryLevel     = 1.0f;
     private static final float BATTERY_DRAIN = 1f / 180f;
+
+    private boolean infoTextsEnabled = true;
 
     // Settings overlay (visible when cursor is released)
     private Stage  settingsStage;
     private Skin   skin;
     private Label  valueLabel;
+    private Label  infoToggleLabel;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     @Override
     public void create() {
         map         = new GameMap();
-        player      = new Player(2.5, 2.5);
+        player      = new Player(4.5, 4.5);
         renderer    = new GameRenderer();
         doorManager = new DoorManager(map);
 
@@ -88,6 +101,7 @@ public class IanGame extends ApplicationAdapter {
     @Override
     public void render() {
         float dt = Gdx.graphics.getDeltaTime();
+        timeSinceStart += dt;
 
         handleInput(dt);
 
@@ -104,12 +118,46 @@ public class IanGame extends ApplicationAdapter {
         renderer.update(dt);
         renderer.render(player, map, doorManager);
 
-        if (flashlightOn) renderer.drawBatteryMeter(batteryLevel);
+        if (timeSinceStart >= 30f && !thirtySecEventFired) {
+            thirtySecEventFired = true;
+            eventFiredAt = timeSinceStart;
+            flickerRoomIdx = getRoomLightIndex();
+            if (flickerRoomIdx >= 0) renderer.setRoomFlickerIntense(flickerRoomIdx, true);
+            doorManager.openAll();
+            doorManager.setLockOpen(true);
+        }
+
+        if (thirtySecEventFired && !lightsOutFired && (timeSinceStart - eventFiredAt) >= 5f) {
+            lightsOutFired = true;
+            lightsOut      = true;
+            lightsOutAt    = timeSinceStart;
+            renderer.setLightsOut(true);
+        }
+        if (lightsOut && (timeSinceStart - lightsOutAt) >= 10f) {
+            lightsOut = false;
+            renderer.setLightsOut(false);
+            if (flickerRoomIdx >= 0) renderer.setRoomFlickerIntense(flickerRoomIdx, false);
+            doorManager.setLockOpen(false);
+        }
+
+        if (flashlightOn) renderer.drawBatteryMeter(batteryLevel, infoTextsEnabled && flashlightOnCount >= 2);
+
+        if (infoTextsEnabled) {
+            java.util.List<String> overlayTexts = new java.util.ArrayList<>();
+            String nearLabel = getNearbyObjectLabel();
+            if (nearLabel != null)                              overlayTexts.add(nearLabel);
+            if (timeSinceStart >= 10f && !flashlightEverUsed)  overlayTexts.add("Press F to toggle the flashlight");
+            if (isNearTileType(7) && !doorEverInteracted)      overlayTexts.add("Press E to open doors");
+            if (!overlayTexts.isEmpty())
+                renderer.drawOverlayTexts(overlayTexts.toArray(new String[0]));
+        }
 
         if (!Gdx.input.isCursorCatched()) {
             settingsStage.act(dt);
             settingsStage.draw();
         }
+
+        renderer.drawFadeOverlay();
     }
 
     @Override
@@ -148,13 +196,17 @@ public class IanGame extends ApplicationAdapter {
 
         // Toggle flashlight
         if (Gdx.input.isKeyJustPressed(Keys.F)) {
-            flashlightOn = !flashlightOn;
+            flashlightOn       = !flashlightOn;
+            flashlightEverUsed = true;
+            if (flashlightOn) flashlightOnCount++;
             renderer.setFlashlight(flashlightOn);
         }
 
         // Interact with door
-        if (Gdx.input.isKeyJustPressed(Keys.E))
+        if (Gdx.input.isKeyJustPressed(Keys.E)) {
             doorManager.tryInteract(player.x, player.y, player.dirX, player.dirY);
+            doorEverInteracted = true;
+        }
 
         // Keyboard rotate
         if (Gdx.input.isKeyPressed(Keys.LEFT))
@@ -194,6 +246,58 @@ public class IanGame extends ApplicationAdapter {
         return cell == 0 || (cell == 7 && doorManager.isPassable(col, row));
     }
 
+    /** Returns the label for the nearest interactable object, or null if none. */
+    private String getNearbyObjectLabel() {
+        if (isNearTable())          return "This is a table";
+        if (isNearCabinet())        return "This is a cabinet";
+        if (isNearTileType(7))      return "This is a door";
+        if (isNearTileType(8))      return "This is a window";
+        return null;
+    }
+
+    /**
+     * Returns the LIGHTS index (0-8) for the room the player is currently in,
+     * or -1 if they are in a corridor or gap.
+     */
+    private int getRoomLightIndex() {
+        double x = player.x, y = player.y;
+        int col = (x >= 1 && x < 9)  ? 0 : (x >= 13 && x < 25) ? 1 : (x >= 28 && x < 35) ? 2 : -1;
+        int row = (y >= 1 && y < 9)  ? 0 : (y >= 13 && y < 23) ? 1 : (y >= 26 && y < 35) ? 2 : -1;
+        if (col < 0 || row < 0) return -1;
+        return row * 3 + col;
+    }
+
+    /** Returns true if the player is close enough to a table to trigger the info label. */
+    private boolean isNearTable() {
+        final double TOUCH_RADIUS = TABLE_RADIUS + 0.2;
+        double r2 = TOUCH_RADIUS * TOUCH_RADIUS;
+        for (float[] t : RayCaster.TABLES) {
+            double dx = player.x - t[0], dy = player.y - t[1];
+            if (dx * dx + dy * dy < r2) return true;
+        }
+        return false;
+    }
+
+    /** Returns true if the player is within interaction range of any cabinet. */
+    private boolean isNearCabinet() {
+        final float margin = 0.3f;
+        for (float[] c : RayCaster.CABINET_BOXES) {
+            if (player.x > c[0] - c[2] - margin && player.x < c[0] + c[2] + margin &&
+                player.y > c[1] - c[3] - margin && player.y < c[1] + c[3] + margin) return true;
+        }
+        return false;
+    }
+
+    /** Returns true if any map tile of the given type is within ~0.7 units of the player. */
+    private boolean isNearTileType(int type) {
+        int x0 = (int)(player.x - 0.7), x1 = (int)(player.x + 0.7);
+        int y0 = (int)(player.y - 0.7), y1 = (int)(player.y + 0.7);
+        for (int row = y0; row <= y1; row++)
+            for (int col = x0; col <= x1; col++)
+                if (map.getCell(col, row) == type) return true;
+        return false;
+    }
+
     /** Returns true if the given position is within TABLE_RADIUS of any table. */
     private boolean tableBlocks(double x, double y) {
         double r2 = TABLE_RADIUS * TABLE_RADIUS;
@@ -230,9 +334,16 @@ public class IanGame extends ApplicationAdapter {
             }
         });
 
-        Label title  = new Label("Mouse Sensitivity", skin);
-        valueLabel   = new Label(String.format("%.4f", mouseSensitivity), skin);
-        Label hint   = new Label("Press Escape to resume", skin);
+        Label title      = new Label("Mouse Sensitivity", skin);
+        valueLabel       = new Label(String.format("%.4f", mouseSensitivity), skin);
+        infoToggleLabel  = new Label("Info texts: ON", skin);
+        infoToggleLabel.addListener(new ClickListener() {
+            @Override
+            public void clicked(InputEvent event, float x, float y) {
+                infoTextsEnabled = !infoTextsEnabled;
+                infoToggleLabel.setText("Info texts: " + (infoTextsEnabled ? "ON" : "OFF"));
+            }
+        });
         Label closeX = new Label("  X  ", skin);
         closeX.addListener(new ClickListener() {
             @Override
@@ -250,7 +361,7 @@ public class IanGame extends ApplicationAdapter {
         // Remaining rows span both columns
         table.add(slider).width(300).padBottom(6).colspan(2).row();
         table.add(valueLabel).padBottom(20).colspan(2).row();
-        table.add(hint).colspan(2);
+        table.add(infoToggleLabel).left().colspan(2);
         Table root = new Table();
         root.setFillParent(true);
         root.center();

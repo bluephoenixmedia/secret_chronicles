@@ -57,17 +57,17 @@ public class RayCaster {
     /** Speed at which the brightness lerps toward its target. */
     private static final float FLICKER_LERP   = 16f;
 
-    private final float[] flickerMult;    // current brightness multiplier in [0,1]
-    private final float[] flickerTarget;  // lerp target
-    private final float[] flickerTimer;   // seconds remaining in current dip
-    private final java.util.Random rng    = new java.util.Random();
+    private final float[]   flickerMult;      // current brightness multiplier in [0,1]
+    private final float[]   flickerTarget;    // lerp target
+    private final float[]   flickerTimer;     // seconds remaining in current dip
+    private final boolean[] intenseFlicker;   // true = this light flickers aggressively
+    private final java.util.Random rng        = new java.util.Random();
 
     // ── Sprite / table positions (world-space x, y) ───────────────────────────
     //  2–4 tables scattered through each of the nine rooms, clear of doorways.
 
     public static final float[][] TABLES = {
-        // Room (0,0) grey      cols 2-7, rows 2-7
-        { 3.5f,  2.8f }, { 6.2f, 5.5f }, { 2.8f, 6.2f },
+        // Room (0,0) grey — spawn room, no tables
         // Room (0,1) terracotta cols 14-23, rows 2-7
         { 15.5f, 3.0f }, { 21.5f, 3.0f }, { 18.5f, 6.2f },
         // Room (0,2) moss       cols 29-33, rows 2-7
@@ -94,9 +94,7 @@ public class RayCaster {
     //  Back face of every cabinet is flush with its room's outer wall.
 
     public static final float[][] CABINET_BOXES = {
-        // Room (0,0)
-        { 2.15f,  5.0f,  0.15f, 0.35f,  1f },   // left wall  → front faces +X
-        { 7.85f,  2.5f,  0.15f, 0.35f, -1f },   // right wall → front faces -X
+        // Room (0,0) — spawn room, no cabinets
         // Room (0,1)
         { 14.15f, 2.5f,  0.15f, 0.35f,  1f },
         { 23.85f, 6.5f,  0.15f, 0.35f, -1f },
@@ -140,8 +138,14 @@ public class RayCaster {
     private float flashTimer  = 0f;
     private float flashBattery = 1f;  // 0..1, drives brightness and flicker intensity
 
+    /** When true, all room lights are suppressed — only ambient remains. */
+    private boolean lightsOut = false;
+
     /** Toggles the player's flashlight on or off. */
     public void setFlashlight(boolean on) { this.flashlightOn = on; }
+
+    /** Turns all room lights off (true) or back on (false). */
+    public void setLightsOut(boolean out) { this.lightsOut = out; }
 
     /** Updates the battery level (0..1) used to dim and destabilise the flashlight. */
     public void setBattery(float battery) { this.flashBattery = Math.max(0f, Math.min(1f, battery)); }
@@ -153,12 +157,19 @@ public class RayCaster {
         this.atlas   = new TextureAtlas();
         this.zBuffer = new double[screenWidth];
 
-        int n        = LIGHTS.length;
-        flickerMult  = new float[n];
-        flickerTarget = new float[n];
-        flickerTimer  = new float[n];
+        int n          = LIGHTS.length;
+        flickerMult    = new float[n];
+        flickerTarget  = new float[n];
+        flickerTimer   = new float[n];
+        intenseFlicker = new boolean[n];
         java.util.Arrays.fill(flickerMult,   1f);
         java.util.Arrays.fill(flickerTarget, 1f);
+    }
+
+    /** Enables or disables aggressive flickering on a single room light. */
+    public void setIntenseFlicker(int lightIndex, boolean on) {
+        if (lightIndex >= 0 && lightIndex < intenseFlicker.length)
+            intenseFlicker[lightIndex] = on;
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -171,13 +182,20 @@ public class RayCaster {
             flickerTimer[i] -= dt;
 
             if (flickerTimer[i] <= 0f) {
-                if (rng.nextFloat() < FLICKER_CHANCE * dt) {
-                    // Trigger a flicker: snap brightness down to a random low value
-                    flickerTarget[i] = 0.10f + rng.nextFloat() * 0.55f;
-                    flickerTimer[i]  = 0.03f + rng.nextFloat() * 0.11f;
+                float chance = intenseFlicker[i] ? FLICKER_CHANCE * 20f : FLICKER_CHANCE;
+                if (rng.nextFloat() < chance * dt) {
+                    // Trigger a flicker: intense mode dips much deeper and more often
+                    float floor  = intenseFlicker[i] ? 0.02f : 0.10f;
+                    float range  = intenseFlicker[i] ? 0.30f : 0.55f;
+                    float hold   = intenseFlicker[i] ? 0.08f + rng.nextFloat() * 0.18f
+                                                     : 0.03f + rng.nextFloat() * 0.11f;
+                    flickerTarget[i] = floor + rng.nextFloat() * range;
+                    flickerTimer[i]  = hold;
                 } else {
-                    // Idle: tiny random breathing (±3 % around 1.0)
-                    flickerTarget[i] = 0.97f + rng.nextFloat() * 0.06f;
+                    // Idle: intense mode stays dimmer on average
+                    flickerTarget[i] = intenseFlicker[i]
+                        ? 0.55f + rng.nextFloat() * 0.30f
+                        : 0.97f + rng.nextFloat() * 0.06f;
                 }
             }
 
@@ -231,7 +249,7 @@ public class RayCaster {
      */
     private float computeLighting(double wx, double wy) {
         float total = AMBIENT;
-        for (int i = 0; i < LIGHTS.length; i++) {
+        if (!lightsOut) for (int i = 0; i < LIGHTS.length; i++) {
             double dx    = wx - LIGHTS[i][0];
             double dy    = wy - LIGHTS[i][1];
             double dist2 = dx * dx + dy * dy;

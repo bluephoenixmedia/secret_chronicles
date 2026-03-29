@@ -5,6 +5,8 @@ import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.OrthographicCamera;
 import com.badlogic.gdx.graphics.Pixmap;
 import com.badlogic.gdx.graphics.Texture;
+import com.badlogic.gdx.graphics.g2d.BitmapFont;
+import com.badlogic.gdx.graphics.g2d.GlyphLayout;
 import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
 import com.badlogic.gdx.utils.Disposable;
@@ -57,18 +59,25 @@ public class GameRenderer implements Disposable {
 
     private final int[]       pixels;
     private final RayCaster   rayCaster;
+    private final BitmapFont  infoFont;
+    private final GlyphLayout infoLayout;
+
+    private static final float FADE_DURATION = 1.5f;
+    private float fadeAlpha = 1.0f;
 
     // ── Constructor ───────────────────────────────────────────────────────────
 
     public GameRenderer() {
-        pixels    = new int[RENDER_WIDTH * RENDER_HEIGHT];
-        rayCaster = new RayCaster(RENDER_WIDTH, RENDER_HEIGHT);
-        pixmap    = new Pixmap(RENDER_WIDTH, RENDER_HEIGHT, Pixmap.Format.RGBA8888);
-        texture   = new Texture(pixmap);
-        batch     = new SpriteBatch();
-        shapes    = new ShapeRenderer();
-        camera    = new OrthographicCamera();
-        viewport  = new FitViewport(RENDER_WIDTH, RENDER_HEIGHT, camera);
+        pixels     = new int[RENDER_WIDTH * RENDER_HEIGHT];
+        rayCaster  = new RayCaster(RENDER_WIDTH, RENDER_HEIGHT);
+        pixmap     = new Pixmap(RENDER_WIDTH, RENDER_HEIGHT, Pixmap.Format.RGBA8888);
+        texture    = new Texture(pixmap);
+        batch      = new SpriteBatch();
+        shapes     = new ShapeRenderer();
+        camera     = new OrthographicCamera();
+        viewport   = new FitViewport(RENDER_WIDTH, RENDER_HEIGHT, camera);
+        infoFont   = new BitmapFont();
+        infoLayout = new GlyphLayout();
     }
 
     /** Toggles the player's flashlight on or off. */
@@ -77,11 +86,21 @@ public class GameRenderer implements Disposable {
     /** Forwards the current battery level (0..1) to the raycaster. */
     public void setBattery(float battery) { rayCaster.setBattery(battery); }
 
+    /** Enables or disables aggressive flickering on the given room light index (0-8). */
+    public void setRoomFlickerIntense(int lightIndex, boolean on) {
+        rayCaster.setIntenseFlicker(lightIndex, on);
+    }
+
+    /** Turns all room lights off (true) or back on (false). */
+    public void setLightsOut(boolean out) { rayCaster.setLightsOut(out); }
+
     /**
      * Draws a battery meter in the bottom-right corner.
      * Only call this when the flashlight is on.
+     *
+     * @param showLabel  when true, draws "Flashlight battery" to the left of the bar
      */
-    public void drawBatteryMeter(float battery) {
+    public void drawBatteryMeter(float battery, boolean showLabel) {
         final int BAR_W = 60, BAR_H = 8, PAD = 10, NUB_W = 4, NUB_H = 4;
         float x = RENDER_WIDTH  - PAD - BAR_W;
         float y = PAD;
@@ -109,6 +128,40 @@ public class GameRenderer implements Disposable {
         shapes.setColor(0.7f, 0.7f, 0.7f, 1f);
         shapes.rect(x, y, BAR_W, BAR_H);
         shapes.end();
+
+        if (showLabel) {
+            final String label = "Flashlight battery";
+            final int    GAP   = 6;
+            infoLayout.setText(infoFont, label);
+            float labelX = x - GAP - infoLayout.width;
+            float labelY = y + BAR_H / 2f + infoFont.getCapHeight() / 2f;
+            batch.setProjectionMatrix(camera.combined);
+            batch.begin();
+            infoFont.draw(batch, infoLayout, labelX, labelY);
+            batch.end();
+        }
+    }
+
+    /**
+     * Draws one or more overlay texts stacked in the top-right corner.
+     * Each entry is offset downward by the font line height + a small gap,
+     * so multiple simultaneous labels never overlap.
+     */
+    public void drawOverlayTexts(String... texts) {
+        if (texts.length == 0) return;
+        final int   PAD      = 10;
+        final float LINE_GAP = 4f;
+        float y = RENDER_HEIGHT - PAD;
+
+        batch.setProjectionMatrix(camera.combined);
+        batch.begin();
+        for (String text : texts) {
+            infoLayout.setText(infoFont, text);
+            float x = RENDER_WIDTH - PAD - infoLayout.width;
+            infoFont.draw(batch, infoLayout, x, y);
+            y -= infoFont.getLineHeight() + LINE_GAP;
+        }
+        batch.end();
     }
 
     /** Call this whenever the window is resized (including entering fullscreen). */
@@ -116,9 +169,26 @@ public class GameRenderer implements Disposable {
         viewport.update(width, height, true);
     }
 
-    /** Advances light flicker animations. Call once per frame before {@link #render}. */
+    /** Advances light flicker animations and the spawn fade. Call once per frame before {@link #render}. */
     public void update(float dt) {
         rayCaster.update(dt);
+        if (fadeAlpha > 0f) fadeAlpha = Math.max(0f, fadeAlpha - dt / FADE_DURATION);
+    }
+
+    /**
+     * Draws a full-screen black overlay that fades out on spawn.
+     * A no-op once the fade has finished. Call last each frame so it covers all other UI.
+     */
+    public void drawFadeOverlay() {
+        if (fadeAlpha <= 0f) return;
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        shapes.setProjectionMatrix(camera.combined);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+        shapes.setColor(0f, 0f, 0f, fadeAlpha);
+        shapes.rect(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+        shapes.end();
+        Gdx.gl.glDisable(GL20.GL_BLEND);
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -220,5 +290,6 @@ public class GameRenderer implements Disposable {
         texture.dispose();
         batch.dispose();
         shapes.dispose();
+        infoFont.dispose();
     }
 }
