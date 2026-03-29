@@ -71,6 +71,46 @@ public class GameRenderer implements Disposable {
         viewport  = new FitViewport(RENDER_WIDTH, RENDER_HEIGHT, camera);
     }
 
+    /** Toggles the player's flashlight on or off. */
+    public void setFlashlight(boolean on) { rayCaster.setFlashlight(on); }
+
+    /** Forwards the current battery level (0..1) to the raycaster. */
+    public void setBattery(float battery) { rayCaster.setBattery(battery); }
+
+    /**
+     * Draws a battery meter in the bottom-right corner.
+     * Only call this when the flashlight is on.
+     */
+    public void drawBatteryMeter(float battery) {
+        final int BAR_W = 60, BAR_H = 8, PAD = 10, NUB_W = 4, NUB_H = 4;
+        float x = RENDER_WIDTH  - PAD - BAR_W;
+        float y = PAD;
+
+        shapes.setProjectionMatrix(camera.combined);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+
+        // Background
+        shapes.setColor(0.1f, 0.1f, 0.1f, 0.85f);
+        shapes.rect(x, y, BAR_W, BAR_H);
+        // Battery nub
+        shapes.setColor(0.35f, 0.35f, 0.35f, 0.9f);
+        shapes.rect(x + BAR_W, y + (BAR_H - NUB_H) / 2f, NUB_W, NUB_H);
+
+        // Fill colour: green → yellow → red
+        if (battery > 0.5f)      shapes.setColor(0.2f, 0.85f, 0.2f,  1f);
+        else if (battery > 0.2f) shapes.setColor(0.95f, 0.80f, 0.1f, 1f);
+        else                     shapes.setColor(0.95f, 0.18f, 0.18f, 1f);
+        shapes.rect(x, y, BAR_W * battery, BAR_H);
+
+        shapes.end();
+
+        // Outline drawn separately (Line type)
+        shapes.begin(ShapeRenderer.ShapeType.Line);
+        shapes.setColor(0.7f, 0.7f, 0.7f, 1f);
+        shapes.rect(x, y, BAR_W, BAR_H);
+        shapes.end();
+    }
+
     /** Call this whenever the window is resized (including entering fullscreen). */
     public void resize(int width, int height) {
         viewport.update(width, height, true);
@@ -147,6 +187,8 @@ public class GameRenderer implements Disposable {
                     // Door: amber when closed, green when open
                     float open = (doors != null) ? doors.getOpenAmount(col, row) : 0f;
                     shapes.setColor(1f - open * 0.6f, 0.55f + open * 0.35f, 0.0f, 0.95f);
+                } else if (tile == 8) {
+                    shapes.setColor(0.12f, 0.15f, 0.45f, 0.95f); // window: night sky blue
                 } else if (tile == 5) {
                     shapes.setColor(0.4f, 0.25f, 0.1f, 0.85f);  // dark wood frames
                 } else if (tile > 0) {

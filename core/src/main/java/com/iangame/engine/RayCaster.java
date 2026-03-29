@@ -86,10 +86,65 @@ public class RayCaster {
         { 30.5f, 28.5f }, { 31.0f, 32.5f },
     };
 
+    // ── Cabinet axis-aligned boxes ────────────────────────────────────────────
+    //  Each entry: { cx, cy, hw, hd, frontNx }
+    //    hw  = half-depth  (perpendicular to wall, X axis)
+    //    hd  = half-width  (along wall, Y axis)
+    //    frontNx = +1 if front face points right (+X), -1 if it points left (-X)
+    //  Back face of every cabinet is flush with its room's outer wall.
+
+    public static final float[][] CABINET_BOXES = {
+        // Room (0,0)
+        { 2.15f,  5.0f,  0.15f, 0.35f,  1f },   // left wall  → front faces +X
+        { 7.85f,  2.5f,  0.15f, 0.35f, -1f },   // right wall → front faces -X
+        // Room (0,1)
+        { 14.15f, 2.5f,  0.15f, 0.35f,  1f },
+        { 23.85f, 6.5f,  0.15f, 0.35f, -1f },
+        // Room (0,2)
+        { 29.15f, 2.5f,  0.15f, 0.35f,  1f },
+        { 33.85f, 6.5f,  0.15f, 0.35f, -1f },
+        // Room (1,0)
+        { 2.15f, 14.2f,  0.15f, 0.35f,  1f },
+        { 7.85f, 20.0f,  0.15f, 0.35f, -1f },
+        // Room (1,1)
+        { 14.15f, 15.0f, 0.15f, 0.35f,  1f },
+        { 23.85f, 20.0f, 0.15f, 0.35f, -1f },
+        // Room (1,2)
+        { 29.15f, 14.2f, 0.15f, 0.35f,  1f },
+        { 33.85f, 20.0f, 0.15f, 0.35f, -1f },
+        // Room (2,0)
+        { 2.15f, 27.2f,  0.15f, 0.35f,  1f },
+        { 7.85f, 32.0f,  0.15f, 0.35f, -1f },
+        // Room (2,1)
+        { 14.15f, 28.5f, 0.15f, 0.35f,  1f },
+        { 23.85f, 32.0f, 0.15f, 0.35f, -1f },
+        // Room (2,2)
+        { 29.15f, 28.5f, 0.15f, 0.35f,  1f },
+        { 33.85f, 32.0f, 0.15f, 0.35f, -1f },
+    };
+
     /** Per-column depth buffer populated during wall casting. */
     private final double[] zBuffer;
 
     private final TextureAtlas atlas;
+
+    // ── Flashlight state ──────────────────────────────────────────────────────
+
+    private boolean flashlightOn = false;
+    /** Player position/direction captured at the start of each render pass. */
+    private double flashPX, flashPY, flashDX, flashDY;
+
+    // Flashlight flicker (same lerp approach as room lights)
+    private float flashMult   = 1f;
+    private float flashTarget = 1f;
+    private float flashTimer  = 0f;
+    private float flashBattery = 1f;  // 0..1, drives brightness and flicker intensity
+
+    /** Toggles the player's flashlight on or off. */
+    public void setFlashlight(boolean on) { this.flashlightOn = on; }
+
+    /** Updates the battery level (0..1) used to dim and destabilise the flashlight. */
+    public void setBattery(float battery) { this.flashBattery = Math.max(0f, Math.min(1f, battery)); }
 
     public RayCaster(int screenWidth, int screenHeight) {
         this.screenW = screenWidth;
@@ -132,9 +187,34 @@ public class RayCaster {
             if (flickerMult[i] < 0.05f) flickerMult[i] = 0.05f;
             if (flickerMult[i] > 1.00f) flickerMult[i] = 1.00f;
         }
+
+        // Flashlight flicker — chance and dip depth increase as battery drains
+        if (flashlightOn) {
+            float depletion     = 1f - flashBattery;               // 0 = full, 1 = dead
+            float flickerChance = 0.3f + depletion * 5.0f;        // ramps up sharply
+            float dipMin        = 0.35f - depletion * 0.30f;      // floor drops lower
+            float idleMax       = 1.00f - depletion * 0.25f;      // ceiling falls too
+
+            flashTimer -= dt;
+            if (flashTimer <= 0f) {
+                if (rng.nextFloat() < flickerChance * dt) {
+                    flashTarget = dipMin + rng.nextFloat() * 0.35f;
+                    flashTimer  = 0.02f + rng.nextFloat() * 0.08f;
+                } else {
+                    flashTarget = (idleMax - 0.10f) + rng.nextFloat() * 0.10f;
+                }
+            }
+            flashMult += (flashTarget - flashMult) * Math.min(1f, FLICKER_LERP * dt);
+            if (flashMult < 0.05f) flashMult = 0.05f;
+            if (flashMult > 1.00f) flashMult = 1.00f;
+        }
     }
 
     public void render(Player player, GameMap map, DoorManager doors, int[] pixels) {
+        // Snapshot player state so computeLighting can use it for the flashlight.
+        flashPX = player.x;  flashPY = player.y;
+        flashDX = player.dirX; flashDY = player.dirY;
+
         java.util.Arrays.fill(zBuffer, Double.MAX_VALUE);
         castFloorAndCeiling(player, pixels);
         for (int x = 0; x < screenW; x++) {
@@ -160,6 +240,24 @@ public class RayCaster {
                 total   += (float)(LIGHTS[i][2] * flickerMult[i] * t * t);
             }
         }
+        // Flashlight: a directional cone centred on the player's aim direction.
+        if (flashlightOn) {
+            double fdx   = wx - flashPX;
+            double fdy   = wy - flashPY;
+            double dist2 = fdx * fdx + fdy * fdy;
+            double maxR  = 10.0;
+            if (dist2 < maxR * maxR && dist2 > 0.0001) {
+                double dist = Math.sqrt(dist2);
+                double dot  = (fdx / dist) * flashDX + (fdy / dist) * flashDY;
+                // ~40° half-angle cone (cos 40° ≈ 0.766)
+                if (dot > 0.766) {
+                    double falloff     = 1.0 - dist2 / (maxR * maxR);
+                    double angleFactor = (dot - 0.766) / (1.0 - 0.766);
+                    total += (float)(0.65 * flashBattery * flashMult * falloff * falloff * angleFactor);
+                }
+            }
+        }
+
         return Math.min(1f, total);
     }
 
@@ -292,6 +390,43 @@ public class RayCaster {
             wallX -= Math.floor(wallX);
         }
 
+        // ── Cabinet slab intersection (ray-AABB) ─────────────────────────────
+        int     hitCab   = -1;
+        boolean cabXFace = false;
+        double  cabU     = 0;
+        for (int ci = 0; ci < CABINET_BOXES.length; ci++) {
+            float  cx2 = CABINET_BOXES[ci][0], cy2 = CABINET_BOXES[ci][1];
+            float  hw  = CABINET_BOXES[ci][2], hd  = CABINET_BOXES[ci][3];
+            double txMin, txMax, tyMin, tyMax;
+            if (rayDirX != 0) {
+                txMin = ((cx2 - hw) - player.x) / rayDirX;
+                txMax = ((cx2 + hw) - player.x) / rayDirX;
+                if (txMin > txMax) { double tmp = txMin; txMin = txMax; txMax = tmp; }
+            } else if (player.x >= cx2 - hw && player.x <= cx2 + hw) {
+                txMin = -1e18; txMax = 1e18;
+            } else continue;
+            if (rayDirY != 0) {
+                tyMin = ((cy2 - hd) - player.y) / rayDirY;
+                tyMax = ((cy2 + hd) - player.y) / rayDirY;
+                if (tyMin > tyMax) { double tmp = tyMin; tyMin = tyMax; tyMax = tmp; }
+            } else if (player.y >= cy2 - hd && player.y <= cy2 + hd) {
+                tyMin = -1e18; tyMax = 1e18;
+            } else continue;
+            double tEnter = Math.max(txMin, tyMin);
+            double tExit  = Math.min(txMax, tyMax);
+            if (tEnter >= tExit || tEnter <= 0.001 || tEnter >= perpWallDist) continue;
+            perpWallDist = tEnter;
+            hitCab   = ci;
+            cabXFace = (txMin >= tyMin);
+            if (cabXFace) {
+                double hy = player.y + tEnter * rayDirY;
+                cabU = Math.max(0, Math.min(1, (hy - (cy2 - hd)) / (2.0 * hd)));
+            } else {
+                double hx = player.x + tEnter * rayDirX;
+                cabU = Math.max(0, Math.min(1, (hx - (cx2 - hw)) / (2.0 * hw)));
+            }
+        }
+
         // Record depth for sprite occlusion
         zBuffer[x] = perpWallDist;
 
@@ -299,25 +434,35 @@ public class RayCaster {
         double hitX   = player.x + perpWallDist * rayDirX;
         double hitY   = player.y + perpWallDist * rayDirY;
         float  wallLit = computeLighting(hitX, hitY);
-        // E/W faces receive an extra directional shade
-        if (side == 1 && !hitDoor) wallLit *= SIDE_SHADE;
+
+        int    sz   = TextureAtlas.TEX_SIZE;
+        int[]  tex;
+        int    texX;
+
+        if (hitCab >= 0) {
+            // Front face: X-aligned hit where the ray approaches from the correct side
+            boolean isFront = cabXFace && ((rayDirX < 0 ? 1f : -1f) == CABINET_BOXES[hitCab][4]);
+            if (!isFront) wallLit *= SIDE_SHADE;
+            tex  = isFront ? atlas.cabinetFront : atlas.cabinetSide;
+            texX = (int)(cabU * sz) & TextureAtlas.TEX_MASK;
+        } else {
+            // E/W faces receive an extra directional shade
+            if (side == 1 && !hitDoor) wallLit *= SIDE_SHADE;
+            tex = atlas.getWall(wallType);
+            if (hitDoor) {
+                texX = (int)(wallX * sz) & TextureAtlas.TEX_MASK;
+            } else {
+                texX = (int)(wallX * sz);
+                if (side == 0 && rayDirX > 0) texX = sz - texX - 1;
+                if (side == 1 && rayDirY < 0) texX = sz - texX - 1;
+                texX = texX & TextureAtlas.TEX_MASK;
+            }
+        }
 
         int lineHeight = (int) (screenH / perpWallDist);
         int drawStart  = Math.max(0,       halfH - lineHeight / 2);
         int drawEnd    = Math.min(screenH, halfH + lineHeight / 2);
 
-        int texX;
-        if (hitDoor) {
-            texX = (int)(wallX * TextureAtlas.TEX_SIZE) & TextureAtlas.TEX_MASK;
-        } else {
-            texX = (int)(wallX * TextureAtlas.TEX_SIZE);
-            if (side == 0 && rayDirX > 0) texX = TextureAtlas.TEX_SIZE - texX - 1;
-            if (side == 1 && rayDirY < 0) texX = TextureAtlas.TEX_SIZE - texX - 1;
-            texX = texX & TextureAtlas.TEX_MASK;
-        }
-
-        int[]  tex     = atlas.getWall(wallType);
-        int    sz      = TextureAtlas.TEX_SIZE;
         double texStep = (double) sz / lineHeight;
         double texPos  = (drawStart - halfH + lineHeight / 2.0) * texStep;
 

@@ -16,11 +16,15 @@ public class TextureAtlas {
     public static final int TEX_MASK = TEX_SIZE - 1; // safe wrap: TEX_SIZE is pow-2
 
     // wall textures indexed by map tile type (index 0 unused)
-    private final int[][] wall = new int[8][];
+    private final int[][] wall = new int[9][];
     public  final int[]   floor;
     public  final int[]   ceiling;
     /** Billboard sprite for table objects (transparent background). */
     public  final int[]   tableSprite;
+    /** Front face texture for 3-D cabinet boxes (two-door wardrobe). */
+    public  final int[]   cabinetFront;
+    /** Side face texture for 3-D cabinet boxes (plain dark wood). */
+    public  final int[]   cabinetSide;
 
     public TextureAtlas() {
         wall[0] = blank();
@@ -31,9 +35,12 @@ public class TextureAtlas {
         wall[5] = makeRottingDoorWood();
         wall[6] = makeTerracotta();
         wall[7] = makeDoorPanel();
-        floor       = makeWornFloorboards();
-        ceiling     = makeWaterStainedCeiling();
-        tableSprite = makeTableSprite();
+        wall[8] = makeWindowNightSky();
+        floor        = makeWornFloorboards();
+        ceiling      = makeWaterStainedCeiling();
+        tableSprite  = makeTableSprite();
+        cabinetFront = makeCabinetFrontTex();
+        cabinetSide  = makeCabinetSideTex();
     }
 
     /** Returns the texture for a wall tile type, falling back to type 1 if unknown. */
@@ -448,6 +455,118 @@ public class TextureAtlas {
                 // Fine cracks
                 if (hash(x * 2, y, 704) > 250) { r = 158; g = 150; b = 140; }
 
+                t[y * TEX_SIZE + x] = rgba(r, g, b);
+            }
+        }
+        return t;
+    }
+
+    // ── Cabinet front-face texture ────────────────────────────────────────────
+    //   Full 64×64 opaque texture.  Tall two-door wardrobe (floor-to-ceiling).
+    //   y=0 = top, y=63 = floor.
+
+    private int[] makeCabinetFrontTex() {
+        int[] t = new int[TEX_SIZE * TEX_SIZE];
+        for (int y = 0; y < TEX_SIZE; y++) {
+            for (int x = 0; x < TEX_SIZE; x++) {
+                int grain  = smooth(x, y, 2, 950);
+                int coarse = smooth(x, y, 8, 951);
+                int r = 88 + (coarse >> 4) + (grain >> 5) - 8;
+                int g = 52 + (coarse >> 5) + (grain >> 6) - 4;
+                int b = 22 + (grain >> 6);
+                if (hash(x, y * 2, 952) > 215) { r -= 20; g -= 14; b -= 8; }
+                if (hash(x, y * 3, 953) > 250) { r = 25;  g = 14;  b =  5; }
+
+                // Outer frame border
+                boolean isFrame = (x < 3 || x > 60 || y < 3 || y > 60);
+                if (isFrame) { r -= 18; g -= 13; b -= 7; }
+
+                // Crown moulding highlight at top
+                if (y >= 3 && y <= 6) { r += 14; g += 9; b += 4; }
+
+                // Centre vertical divider between the two doors (y 6..55)
+                boolean split = (x >= 30 && x <= 33 && y >= 6 && y <= 55);
+                if (split) { r -= 24; g -= 17; b -= 10; }
+
+                // Door section y 6..55
+                boolean inDoor = (y >= 6 && y <= 55);
+
+                // Panel recesses
+                boolean lPanel = inDoor && (x >= 5  && x <= 27 && y >= 10 && y <= 51);
+                boolean rPanel = inDoor && (x >= 36 && x <= 58 && y >= 10 && y <= 51);
+                if (lPanel || rPanel) { r -= 14; g -= 10; b -= 6; }
+
+                // Panel border highlights
+                boolean lBorder = inDoor && lPanel && (x == 5 || x == 27 || y == 10 || y == 51);
+                boolean rBorder = inDoor && rPanel && (x == 36 || x == 58 || y == 10 || y == 51);
+                if (lBorder || rBorder) { r += 16; g += 11; b += 5; }
+
+                // Brass handles
+                boolean lHandle = (x >= 25 && x <= 28 && y >= 29 && y <= 33);
+                boolean rHandle = (x >= 35 && x <= 38 && y >= 29 && y <= 33);
+                if (lHandle || rHandle) { r = 162; g = 128; b = 52; }
+
+                // Drawer section y 56..60
+                boolean inDrawer = (y >= 56 && y <= 60 && x >= 5 && x <= 58);
+                if (y >= 55 && y <= 61 && !isFrame) { r -= 10; g -= 7; b -= 4; }
+                if (inDrawer) { r -= 12; g -= 9; b -= 5; }
+                boolean drawerHandle = (x >= 27 && x <= 36 && y >= 57 && y <= 59);
+                if (drawerHandle) { r = 162; g = 128; b = 52; }
+
+                t[y * TEX_SIZE + x] = rgba(r, g, b);
+            }
+        }
+        return t;
+    }
+
+    // ── Cabinet side-face texture ─────────────────────────────────────────────
+    //   Full 64×64 opaque texture.  Plain dark wood grain, no detail.
+
+    private int[] makeCabinetSideTex() {
+        int[] t = new int[TEX_SIZE * TEX_SIZE];
+        for (int y = 0; y < TEX_SIZE; y++) {
+            for (int x = 0; x < TEX_SIZE; x++) {
+                int grain  = smooth(x, y, 2, 960);
+                int coarse = smooth(x, y, 9, 961);
+                int r = 65 + (coarse >> 4) + (grain >> 5) - 8;
+                int g = 38 + (coarse >> 5) + (grain >> 6) - 4;
+                int b = 15 + (grain >> 6);
+                if (hash(x, y * 2, 962) > 208) { r -= 22; g -= 15; b -= 9; }
+                if (hash(x, y * 3, 963) > 249) { r = 20;  g = 11;  b =  4; }
+                if (x < 3 || x > 60)           { r -= 15; g -= 10; b -= 6; }
+                t[y * TEX_SIZE + x] = rgba(r, g, b);
+            }
+        }
+        return t;
+    }
+
+    // ── Wall type 8: small window with plain night sky ────────────────────────
+    //   Thick dark-wood frame leaving a narrow opening; flat dark sky, no details.
+
+    private int[] makeWindowNightSky() {
+        int[] t = new int[TEX_SIZE * TEX_SIZE];
+        final int FRAME = 10; // thin frame — leaves a 44×44 opening
+
+        for (int y = 0; y < TEX_SIZE; y++) {
+            for (int x = 0; x < TEX_SIZE; x++) {
+                boolean isFrame = (x < FRAME || x >= TEX_SIZE - FRAME ||
+                                   y < FRAME || y >= TEX_SIZE - FRAME);
+                int r, g, b;
+                if (isFrame) {
+                    // Aged dark wood frame
+                    int grain  = smooth(x, y, 2, 920);
+                    int coarse = smooth(x, y, 8, 921);
+                    r = 52 + (coarse >> 4) + (grain >> 5) - 6;
+                    g = 33 + (coarse >> 5) + (grain >> 6) - 3;
+                    b = 14 + (grain >> 6);
+                    if (hash(x, y * 2, 922) > 215) { r -= 18; g -= 12; b -= 7; }
+                    if (hash(x, y * 3, 923) > 250) { r = 13;  g =  8;  b =  3; }
+                } else {
+                    // Plain dark night sky
+                    r =  5;
+                    g =  7;
+                    b = 22;
+                }
                 t[y * TEX_SIZE + x] = rgba(r, g, b);
             }
         }

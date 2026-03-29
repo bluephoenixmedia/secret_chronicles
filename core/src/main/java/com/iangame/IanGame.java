@@ -47,7 +47,7 @@ import com.iangame.world.GameMap;
 public class IanGame extends ApplicationAdapter {
 
     /** Collision radius around each table centre (world units). */
-    private static final double TABLE_RADIUS = 0.42;
+    private static final double TABLE_RADIUS   = 0.42;
 
     private static final float SENSITIVITY_MIN     = 0.0005f;
     private static final float SENSITIVITY_MAX     = 0.008f;
@@ -59,7 +59,11 @@ public class IanGame extends ApplicationAdapter {
     private GameRenderer renderer;
     private DoorManager  doorManager;
 
-    private float  mouseSensitivity = SENSITIVITY_DEFAULT;
+    private float   mouseSensitivity = SENSITIVITY_DEFAULT;
+    private boolean flashlightOn     = false;
+    /** Battery level 0..1; drains while flashlight is on (~3 minutes total). */
+    private float   batteryLevel     = 1.0f;
+    private static final float BATTERY_DRAIN = 1f / 180f;
 
     // Settings overlay (visible when cursor is released)
     private Stage  settingsStage;
@@ -86,9 +90,21 @@ public class IanGame extends ApplicationAdapter {
         float dt = Gdx.graphics.getDeltaTime();
 
         handleInput(dt);
+
+        if (flashlightOn) {
+            batteryLevel = Math.max(0f, batteryLevel - BATTERY_DRAIN * dt);
+            if (batteryLevel == 0f) {
+                flashlightOn = false;
+                renderer.setFlashlight(false);
+            }
+        }
+        renderer.setBattery(batteryLevel);
+
         doorManager.update(dt);
         renderer.update(dt);
         renderer.render(player, map, doorManager);
+
+        if (flashlightOn) renderer.drawBatteryMeter(batteryLevel);
 
         if (!Gdx.input.isCursorCatched()) {
             settingsStage.act(dt);
@@ -130,6 +146,12 @@ public class IanGame extends ApplicationAdapter {
         if (Gdx.input.isKeyPressed(Keys.D))
             strafe(1.0, dt);
 
+        // Toggle flashlight
+        if (Gdx.input.isKeyJustPressed(Keys.F)) {
+            flashlightOn = !flashlightOn;
+            renderer.setFlashlight(flashlightOn);
+        }
+
         // Interact with door
         if (Gdx.input.isKeyJustPressed(Keys.E))
             doorManager.tryInteract(player.x, player.y, player.dirX, player.dirY);
@@ -153,17 +175,17 @@ public class IanGame extends ApplicationAdapter {
         double speed = player.moveSpeed * delta * dt;
         double newX  = player.x + player.dirX * speed;
         double newY  = player.y + player.dirY * speed;
-        if (isWalkable((int) newX, (int) player.y) && !tableBlocks(newX, player.y)) player.x = newX;
-        if (isWalkable((int) player.x, (int) newY) && !tableBlocks(player.x, newY)) player.y = newY;
+        if (isWalkable((int) newX, (int) player.y) && !tableBlocks(newX, player.y) && !cabinetBlocks(newX, player.y)) player.x = newX;
+        if (isWalkable((int) player.x, (int) newY) && !tableBlocks(player.x, newY) && !cabinetBlocks(player.x, newY)) player.y = newY;
     }
 
-    /** Strafes the player perpendicular to their view direction, respecting walls, doors, and tables. */
+    /** Strafes the player perpendicular to their view direction, respecting walls, doors, tables, and cabinets. */
     private void strafe(double delta, double dt) {
         double speed = player.moveSpeed * delta * dt;
         double newX  = player.x + player.planeX * speed;
         double newY  = player.y + player.planeY * speed;
-        if (isWalkable((int) newX, (int) player.y) && !tableBlocks(newX, player.y)) player.x = newX;
-        if (isWalkable((int) player.x, (int) newY) && !tableBlocks(player.x, newY)) player.y = newY;
+        if (isWalkable((int) newX, (int) player.y) && !tableBlocks(newX, player.y) && !cabinetBlocks(newX, player.y)) player.x = newX;
+        if (isWalkable((int) player.x, (int) newY) && !tableBlocks(player.x, newY) && !cabinetBlocks(player.x, newY)) player.y = newY;
     }
 
     /** Empty tiles and sufficiently-open doors are walkable. */
@@ -178,6 +200,16 @@ public class IanGame extends ApplicationAdapter {
         for (float[] t : RayCaster.TABLES) {
             double dx = x - t[0], dy = y - t[1];
             if (dx * dx + dy * dy < r2) return true;
+        }
+        return false;
+    }
+
+    /** Returns true if the given position is inside any cabinet AABB (with a small margin). */
+    private boolean cabinetBlocks(double x, double y) {
+        final float margin = 0.05f;
+        for (float[] c : RayCaster.CABINET_BOXES) {
+            if (x > c[0] - c[2] - margin && x < c[0] + c[2] + margin &&
+                y > c[1] - c[3] - margin && y < c[1] + c[3] + margin) return true;
         }
         return false;
     }
