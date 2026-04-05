@@ -6,8 +6,8 @@ import com.iangame.world.GameMap;
 /**
  * Core raycasting engine — DDA wall casting + floor/ceiling projection.
  *
- * <p>Lighting model: very dark ambient ({@value AMBIENT}) plus nine warm
- * point lights, one centred in each room.  Distance falloff is quadratic
+ * <p>Lighting model: very dark ambient ({@value AMBIENT}) plus warm point
+ * lights, one centred in each room.  Distance falloff is quadratic
  * (smooth zero at the light's radius).  The warm colour bias (R > G > B)
  * gives an incandescent / candlelight feel in lit areas.
  */
@@ -24,31 +24,9 @@ public class RayCaster {
     private static final float AMBIENT = 0.04f;
 
     // ── Point lights (x, y, intensity, radius) ────────────────────────────────
-    //  One light centred in each of the nine rooms.
-    //  Corridors have no lights so they stay nearly pitch-black.
 
-    private static final float[][] LIGHTS = {
-        //  x       y      intensity  radius
-        {  4.5f,  4.5f,   1.0f,  5.0f },   // room (0,0) grey
-        { 18.5f,  4.5f,   1.0f,  6.0f },   // room (0,1) terracotta
-        { 31.0f,  4.5f,   1.0f,  4.5f },   // room (0,2) moss
-        {  4.5f, 17.5f,   1.0f,  5.5f },   // room (1,0) white
-        { 18.5f, 17.5f,   1.0f,  6.5f },   // room (1,1) terracotta
-        { 31.0f, 17.5f,   1.0f,  4.5f },   // room (1,2) grey
-        {  4.5f, 30.0f,   1.0f,  5.0f },   // room (2,0) moss
-        { 18.5f, 30.0f,   1.0f,  6.0f },   // room (2,1) white
-        { 31.0f, 30.0f,   1.0f,  4.5f },   // room (2,2) terracotta
-    };
-
-    /** Pre-computed radius² so the inner loop avoids sqrt. */
-    private static final float[] LIGHT_RAD_SQ;
-    static {
-        LIGHT_RAD_SQ = new float[LIGHTS.length];
-        for (int i = 0; i < LIGHTS.length; i++) {
-            float r = LIGHTS[i][3];
-            LIGHT_RAD_SQ[i] = r * r;
-        }
-    }
+    private float[][] lights    = new float[0][4];
+    private float[]   lightRadSq = new float[0];
 
     // ── Flicker state (one entry per light) ───────────────────────────────────
 
@@ -57,69 +35,19 @@ public class RayCaster {
     /** Speed at which the brightness lerps toward its target. */
     private static final float FLICKER_LERP   = 16f;
 
-    private final float[]   flickerMult;      // current brightness multiplier in [0,1]
-    private final float[]   flickerTarget;    // lerp target
-    private final float[]   flickerTimer;     // seconds remaining in current dip
-    private final boolean[] intenseFlicker;   // true = this light flickers aggressively
-    private final java.util.Random rng        = new java.util.Random();
+    private float[]   flickerMult    = new float[0];
+    private float[]   flickerTarget  = new float[0];
+    private float[]   flickerTimer   = new float[0];
+    private boolean[] intenseFlicker = new boolean[0];
+    private final java.util.Random rng = new java.util.Random();
 
     // ── Sprite / table positions (world-space x, y) ───────────────────────────
-    //  2–4 tables scattered through each of the nine rooms, clear of doorways.
 
-    public static final float[][] TABLES = {
-        // Room (0,0) grey — spawn room, no tables
-        // Room (0,1) terracotta cols 14-23, rows 2-7
-        { 15.5f, 3.0f }, { 21.5f, 3.0f }, { 18.5f, 6.2f },
-        // Room (0,2) moss       cols 29-33, rows 2-7
-        { 30.5f, 3.0f }, { 31.5f, 6.0f },
-        // Room (1,0) white      cols 2-7, rows 14-21
-        { 3.0f, 15.0f }, { 6.0f, 20.0f }, { 4.5f, 18.0f },
-        // Room (1,1) terracotta cols 14-23, rows 14-21
-        { 15.5f, 15.0f }, { 21.5f, 15.0f }, { 16.0f, 20.5f }, { 22.0f, 20.5f },
-        // Room (1,2) grey       cols 29-33, rows 14-21
-        { 30.0f, 15.5f }, { 31.5f, 19.5f },
-        // Room (2,0) moss       cols 2-7, rows 27-33
-        { 3.0f, 28.0f }, { 6.0f, 31.5f },
-        // Room (2,1) white      cols 14-23, rows 27-33
-        { 16.0f, 28.5f }, { 21.0f, 28.5f }, { 18.5f, 32.0f },
-        // Room (2,2) terracotta cols 29-33, rows 27-33
-        { 30.5f, 28.5f }, { 31.0f, 32.5f },
-    };
+    private float[][] tables       = new float[0][];
+    private float[][] cabinetBoxes = new float[0][];
+    private float[][] bloodSpots   = new float[0][2];
 
-    // ── Cabinet axis-aligned boxes ────────────────────────────────────────────
-    //  Each entry: { cx, cy, hw, hd, frontNx }
-    //    hw  = half-depth  (perpendicular to wall, X axis)
-    //    hd  = half-width  (along wall, Y axis)
-    //    frontNx = +1 if front face points right (+X), -1 if it points left (-X)
-    //  Back face of every cabinet is flush with its room's outer wall.
-
-    public static final float[][] CABINET_BOXES = {
-        // Room (0,0) — spawn room, no cabinets
-        // Room (0,1)
-        { 14.15f, 2.5f,  0.15f, 0.35f,  1f },
-        { 23.85f, 6.5f,  0.15f, 0.35f, -1f },
-        // Room (0,2)
-        { 29.15f, 2.5f,  0.15f, 0.35f,  1f },
-        { 33.85f, 6.5f,  0.15f, 0.35f, -1f },
-        // Room (1,0)
-        { 2.15f, 14.2f,  0.15f, 0.35f,  1f },
-        { 7.85f, 20.0f,  0.15f, 0.35f, -1f },
-        // Room (1,1)
-        { 14.15f, 15.0f, 0.15f, 0.35f,  1f },
-        { 23.85f, 20.0f, 0.15f, 0.35f, -1f },
-        // Room (1,2)
-        { 29.15f, 14.2f, 0.15f, 0.35f,  1f },
-        { 33.85f, 20.0f, 0.15f, 0.35f, -1f },
-        // Room (2,0)
-        { 2.15f, 27.2f,  0.15f, 0.35f,  1f },
-        { 7.85f, 32.0f,  0.15f, 0.35f, -1f },
-        // Room (2,1)
-        { 14.15f, 28.5f, 0.15f, 0.35f,  1f },
-        { 23.85f, 32.0f, 0.15f, 0.35f, -1f },
-        // Room (2,2)
-        { 29.15f, 28.5f, 0.15f, 0.35f,  1f },
-        { 33.85f, 32.0f, 0.15f, 0.35f, -1f },
-    };
+    public void setBloodSpots(float[][] spots) { this.bloodSpots = spots; }
 
     /** Per-column depth buffer populated during wall casting. */
     private final double[] zBuffer;
@@ -156,14 +84,29 @@ public class RayCaster {
         this.halfH   = screenHeight / 2;
         this.atlas   = new TextureAtlas();
         this.zBuffer = new double[screenWidth];
+    }
 
-        int n          = LIGHTS.length;
-        flickerMult    = new float[n];
-        flickerTarget  = new float[n];
-        flickerTimer   = new float[n];
+    /**
+     * Loads world objects from the procedurally generated map.
+     * Rebuilds all flicker arrays to match the new light count.
+     */
+    public void setWorldObjects(float[][] lights, float[][] tables, float[][] cabinetBoxes) {
+        this.lights       = lights;
+        this.tables       = tables;
+        this.cabinetBoxes = cabinetBoxes;
+
+        int n = lights.length;
+        lightRadSq    = new float[n];
+        flickerMult   = new float[n];
+        flickerTarget = new float[n];
+        flickerTimer  = new float[n];
         intenseFlicker = new boolean[n];
-        java.util.Arrays.fill(flickerMult,   1f);
-        java.util.Arrays.fill(flickerTarget, 1f);
+        for (int i = 0; i < n; i++) {
+            float r = lights[i][3];
+            lightRadSq[i]   = r * r;
+            flickerMult[i]  = 1f;
+            flickerTarget[i] = 1f;
+        }
     }
 
     /** Enables or disables aggressive flickering on a single room light. */
@@ -178,7 +121,7 @@ public class RayCaster {
      * Advances flicker animations.  Call once per frame before {@link #render}.
      */
     public void update(float dt) {
-        for (int i = 0; i < LIGHTS.length; i++) {
+        for (int i = 0; i < lights.length; i++) {
             flickerTimer[i] -= dt;
 
             if (flickerTimer[i] <= 0f) {
@@ -249,13 +192,13 @@ public class RayCaster {
      */
     private float computeLighting(double wx, double wy) {
         float total = AMBIENT;
-        if (!lightsOut) for (int i = 0; i < LIGHTS.length; i++) {
-            double dx    = wx - LIGHTS[i][0];
-            double dy    = wy - LIGHTS[i][1];
+        if (!lightsOut) for (int i = 0; i < lights.length; i++) {
+            double dx    = wx - lights[i][0];
+            double dy    = wy - lights[i][1];
             double dist2 = dx * dx + dy * dy;
-            if (dist2 < LIGHT_RAD_SQ[i]) {
-                double t = 1.0 - dist2 / LIGHT_RAD_SQ[i];
-                total   += (float)(LIGHTS[i][2] * flickerMult[i] * t * t);
+            if (dist2 < lightRadSq[i]) {
+                double t = 1.0 - dist2 / lightRadSq[i];
+                total   += (float)(lights[i][2] * flickerMult[i] * t * t);
             }
         }
         // Flashlight: a directional cone centred on the player's aim direction.
@@ -277,6 +220,25 @@ public class RayCaster {
         }
 
         return Math.min(1f, total);
+    }
+
+    /** Blends a colour toward dark red by factor t (0=original, 1=full blood tint). */
+    private static int blendToRed(int rgba, float t) {
+        int r = (rgba >> 24) & 0xFF;
+        int g = (rgba >> 16) & 0xFF;
+        int b = (rgba >>  8) & 0xFF;
+        r = Math.min(255, r + (int)(70 * t));
+        g = Math.max(0,   (int)(g * (1f - t * 0.75f)));
+        b = Math.max(0,   (int)(b * (1f - t * 0.75f)));
+        return (r << 24) | (g << 16) | (b << 8) | 0xFF;
+    }
+
+    /** Shifts a lit colour to red (boosts R, crushes G/B). */
+    private static int applyRedTint(int rgba) {
+        int r = Math.min(255, (int)(((rgba >> 24) & 0xFF) * 1.4f));
+        int g = (int)(((rgba >> 16) & 0xFF) * 0.18f);
+        int b = (int)(((rgba >>  8) & 0xFF) * 0.18f);
+        return (r << 24) | (g << 16) | (b << 8) | 0xFF;
     }
 
     /**
@@ -323,7 +285,16 @@ public class RayCaster {
 
                 float lit = computeLighting(worldX, worldY);
 
-                pixels[floorRow + x] = applyLight(floorTex[idx], lit);
+                int floorColor = applyLight(floorTex[idx], lit);
+                for (float[] spot : bloodSpots) {
+                    double bdx = worldX - spot[0];
+                    double bdy = worldY - spot[1];
+                    double bd2 = bdx * bdx + bdy * bdy;
+                    if (bd2 < 0.25) {
+                        floorColor = blendToRed(floorColor, (float)(1.0 - bd2 / 0.25) * 0.85f);
+                    }
+                }
+                pixels[floorRow + x] = floorColor;
                 // Ceilings are slightly darker — lights hang lower
                 pixels[ceilRow  + x] = applyLight(ceilTex [idx], lit * 0.72f);
 
@@ -412,9 +383,9 @@ public class RayCaster {
         int     hitCab   = -1;
         boolean cabXFace = false;
         double  cabU     = 0;
-        for (int ci = 0; ci < CABINET_BOXES.length; ci++) {
-            float  cx2 = CABINET_BOXES[ci][0], cy2 = CABINET_BOXES[ci][1];
-            float  hw  = CABINET_BOXES[ci][2], hd  = CABINET_BOXES[ci][3];
+        for (int ci = 0; ci < cabinetBoxes.length; ci++) {
+            float  cx2 = cabinetBoxes[ci][0], cy2 = cabinetBoxes[ci][1];
+            float  hw  = cabinetBoxes[ci][2], hd  = cabinetBoxes[ci][3];
             double txMin, txMax, tyMin, tyMax;
             if (rayDirX != 0) {
                 txMin = ((cx2 - hw) - player.x) / rayDirX;
@@ -457,12 +428,14 @@ public class RayCaster {
         int[]  tex;
         int    texX;
 
+        boolean redCabinet = false;
         if (hitCab >= 0) {
             // Front face: X-aligned hit where the ray approaches from the correct side
-            boolean isFront = cabXFace && ((rayDirX < 0 ? 1f : -1f) == CABINET_BOXES[hitCab][4]);
+            boolean isFront = cabXFace && ((rayDirX < 0 ? 1f : -1f) == cabinetBoxes[hitCab][4]);
             if (!isFront) wallLit *= SIDE_SHADE;
             tex  = isFront ? atlas.cabinetFront : atlas.cabinetSide;
             texX = (int)(cabU * sz) & TextureAtlas.TEX_MASK;
+            redCabinet = ((hitCab + 1) % 5 == 0);
         } else {
             // E/W faces receive an extra directional shade
             if (side == 1 && !hitDoor) wallLit *= SIDE_SHADE;
@@ -487,7 +460,8 @@ public class RayCaster {
         for (int y = drawStart; y < drawEnd; y++) {
             int texY  = (int) texPos & TextureAtlas.TEX_MASK;
             texPos   += texStep;
-            pixels[y * screenW + x] = applyLight(tex[texY * sz + texX], wallLit);
+            int color = applyLight(tex[texY * sz + texX], wallLit);
+            pixels[y * screenW + x] = redCabinet ? applyRedTint(color) : color;
         }
     }
 
@@ -499,15 +473,16 @@ public class RayCaster {
      * Pixels with alpha == 0 in the sprite texture are skipped.
      */
     private void renderSprites(Player player, int[] pixels) {
-        int n = TABLES.length;
+        int n = tables.length;
+        if (n == 0) return;
 
         // ── Sort back-to-front (insertion sort — n is small) ─────────────────
         double[] dist  = new double[n];
         int[]    order = new int[n];
         for (int i = 0; i < n; i++) {
             order[i] = i;
-            double dx = player.x - TABLES[i][0];
-            double dy = player.y - TABLES[i][1];
+            double dx = player.x - tables[i][0];
+            double dy = player.y - tables[i][1];
             dist[i]   = dx * dx + dy * dy;
         }
         for (int i = 1; i < n; i++) {
@@ -527,8 +502,8 @@ public class RayCaster {
 
         for (int s = 0; s < n; s++) {
             int    idx = order[s];
-            double spX = TABLES[idx][0] - player.x;
-            double spY = TABLES[idx][1] - player.y;
+            double spX = tables[idx][0] - player.x;
+            double spY = tables[idx][1] - player.y;
 
             // Transform to camera space
             double transformX = invDet * ( player.dirY  * spX - player.dirX  * spY);
@@ -546,7 +521,7 @@ public class RayCaster {
             int drawStartX = Math.max(0,       screenX - spriteW / 2);
             int drawEndX   = Math.min(screenW, screenX + spriteW / 2);
 
-            float spriteLit = computeLighting(TABLES[idx][0], TABLES[idx][1]);
+            float spriteLit = computeLighting(tables[idx][0], tables[idx][1]);
 
             for (int stripe = drawStartX; stripe < drawEndX; stripe++) {
                 if (transformY >= zBuffer[stripe]) continue; // behind a wall

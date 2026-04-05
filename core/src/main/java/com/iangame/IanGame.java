@@ -2,6 +2,7 @@ package com.iangame;
 
 import com.badlogic.gdx.ApplicationAdapter;
 import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.Input.Buttons;
 import com.badlogic.gdx.Input.Keys;
 import com.badlogic.gdx.graphics.Pixmap;
 import com.badlogic.gdx.graphics.Texture;
@@ -18,10 +19,10 @@ import com.badlogic.gdx.scenes.scene2d.utils.ClickListener;
 import com.badlogic.gdx.scenes.scene2d.utils.TextureRegionDrawable;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
 import com.iangame.engine.DoorManager;
-import com.iangame.engine.RayCaster;
 import com.iangame.player.Player;
 import com.iangame.renderer.GameRenderer;
 import com.iangame.world.GameMap;
+import com.iangame.world.MapGenerator;
 
 /**
  * Main LibGDX {@link com.badlogic.gdx.ApplicationListener} implementation.
@@ -59,18 +60,48 @@ public class IanGame extends ApplicationAdapter {
     private GameRenderer renderer;
     private DoorManager  doorManager;
 
+    private float[][] tables;
+    private float[][] cabinetBoxes;
+    private int[][]   roomsData;
+
     private float   mouseSensitivity    = SENSITIVITY_DEFAULT;
     private boolean flashlightOn        = false;
     private float   timeSinceStart        = 0f;
     private boolean flashlightEverUsed   = false;
     private int     flashlightOnCount    = 0;
     private boolean doorEverInteracted   = false;
+    private boolean warningTriggered     = false;
     private boolean thirtySecEventFired  = false;
     private float   eventFiredAt        = -1f;
+    private float   nextCycleAt         = 30f;
+    private boolean isFirstCycle        = true;
+    private float   staticLevel         = 0f;
+    private float   firstMovedAt        = -1f;
+    private boolean gameOver            = false;
+    private double  lastPlayerX, lastPlayerY;
     private int     flickerRoomIdx      = -1;
-    private boolean lightsOutFired      = false;
-    private boolean lightsOut           = false;
-    private float   lightsOutAt         = -1f;
+    private boolean lightsOutFired          = false;
+    private boolean lightsOut               = false;
+    private float   lightsOutAt             = -1f;
+    private float   lightsRestoredAt        = -1f;
+    private boolean postLightsWarningFired  = false;
+    private boolean pytyvoFired             = false;
+    private float   pytyvoFiredAt           = -1f;
+    private int     lastRoomIdx             = -2;  // -2 = uninitialized
+    private float   redTintLevel            = 0f;
+    private float[][] bloodSpots            = new float[0][2];
+    private float   lockedDoorMsgAt        = -1f;
+    /** {doorCol, doorRow, endCol, endRow} for each exterior hallway. */
+    private int[][] hallwayEndpoints = new int[0][];
+/** Per-hallway scheduled close time (-1 = not yet entered). */
+    private float[] hallwayCloseTimes = new float[0];
+    /** Indices of hallways whose entry has already been detected. */
+    private java.util.Set<Integer> hallwayEntered = new java.util.HashSet<>();
+    private java.util.Set<Integer> cabinetKeyIndices = new java.util.HashSet<>();
+    private java.util.Set<Integer> lootedCabinets    = new java.util.HashSet<>();
+    private int     keysHeld               = 0;
+    private float   inventoryShownAt       = -1f;
+    private boolean oKeyUsed               = false;
     /** Battery level 0..1; drains while flashlight is on (~3 minutes total). */
     private float   batteryLevel     = 1.0f;
     private static final float BATTERY_DRAIN = 1f / 180f;
@@ -79,20 +110,38 @@ public class IanGame extends ApplicationAdapter {
 
     // Settings overlay (visible when cursor is released)
     private Stage  settingsStage;
+    private Stage  gameOverStage;
     private Skin   skin;
     private Label  valueLabel;
     private Label  infoToggleLabel;
+    private Label  minimapToggleLabel;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     @Override
     public void create() {
-        map         = new GameMap();
-        player      = new Player(4.5, 4.5);
-        renderer    = new GameRenderer();
-        doorManager = new DoorManager(map);
+        MapGenerator.GeneratedMap gen = MapGenerator.generate(new java.util.Random());
+        map           = new GameMap(gen.grid);
+        player        = new Player(gen.spawnX, gen.spawnY);
+        renderer      = new GameRenderer();
+        doorManager   = new DoorManager(map);
+        tables        = gen.tables;
+        cabinetBoxes  = gen.cabinetBoxes;
+        roomsData     = gen.rooms;
+        renderer.setWorldObjects(gen.lights, gen.tables, gen.cabinetBoxes);
+        doorManager.setLockedDoors(gen.lockedDoorKeys);
+        renderer.setLockedDoors(gen.lockedDoorKeys);
+        cabinetKeyIndices = gen.cabinetKeyIndices;
+        map.outerMargin   = gen.outerMargin;
+        hallwayEndpoints  = gen.hallwayEndpoints;
+        hallwayCloseTimes = new float[hallwayEndpoints.length];
+        hallwayEntered    = new java.util.HashSet<>();
+        java.util.Arrays.fill(hallwayCloseTimes, -1f);
+        lastPlayerX = player.x;
+        lastPlayerY = player.y;
 
         buildSettingsUI();
+        buildGameOverUI();
         Gdx.input.setInputProcessor(settingsStage);
         Gdx.input.setCursorCatched(true);
         Gdx.app.log("IanGame", "Game started — LibGDX " + com.badlogic.gdx.Version.VERSION);
@@ -102,6 +151,41 @@ public class IanGame extends ApplicationAdapter {
     public void render() {
         float dt = Gdx.graphics.getDeltaTime();
         timeSinceStart += dt;
+
+        // Red cabinet click — activate pytyvo, begin fading static, spawn blood
+        if (Gdx.input.isButtonJustPressed(Buttons.LEFT) && isNearRedCabinet()) {
+            pytyvoFired   = true;
+            pytyvoFiredAt = timeSinceStart;
+            firstMovedAt  = -1f;   // cancel any pending game-over countdown
+            playRingTone();
+            bloodSpots = generateBloodSpots();
+            renderer.setBloodSpots(bloodSpots);
+        }
+
+        // Fade static to 0 while pytyvo is active
+        if (pytyvoFired && staticLevel > 0f)
+            staticLevel = Math.max(0f, staticLevel - dt);
+
+        // Dismiss game over once static has fully faded
+        if (gameOver && pytyvoFired && staticLevel == 0f) {
+            gameOver = false;
+            Gdx.input.setCursorCatched(true);
+            Gdx.input.setInputProcessor(settingsStage);
+        }
+
+        if (gameOver) {
+            renderer.render(player, map, doorManager);
+            if (staticLevel > 0f) {
+                if (!pytyvoFired) renderer.drawRedTint(staticLevel * 0.45f);
+                renderer.drawStaticOverlay(staticLevel, pytyvoFired);
+            }
+            gameOverStage.act(dt);
+            gameOverStage.draw();
+            return;
+        }
+
+        // Capture position before input to detect movement this frame
+        double prevX = player.x, prevY = player.y;
 
         handleInput(dt);
 
@@ -115,10 +199,41 @@ public class IanGame extends ApplicationAdapter {
         renderer.setBattery(batteryLevel);
 
         doorManager.update(dt);
+        checkHallwayEntry(dt);
         renderer.update(dt);
         renderer.render(player, map, doorManager);
 
-        if (timeSinceStart >= 30f && !thirtySecEventFired) {
+        // Pytyvo red tint — accumulates each time the player enters a new room,
+        // then slowly fades away over time.
+        if (pytyvoFired) {
+            int curRoom = getRoomLightIndex();
+            if (curRoom >= 0 && curRoom != lastRoomIdx)
+                redTintLevel = Math.min(0.55f, redTintLevel + 0.07f);
+            lastRoomIdx = curRoom;
+        }
+        if (redTintLevel > 0f) {
+            redTintLevel = Math.max(0f, redTintLevel - 0.03f * dt);
+            renderer.drawRedTint(redTintLevel);
+        }
+
+        // Static / game-over effect — only from second cycle onward, blocked once pytyvo is used
+        boolean playerMoved = Math.abs(player.x - prevX) > 0.001 || Math.abs(player.y - prevY) > 0.001;
+        if (lightsOut && !isFirstCycle && !pytyvoFired && playerMoved) {
+            staticLevel = 1f;
+            if (firstMovedAt < 0f) firstMovedAt = timeSinceStart;
+        }
+        if (firstMovedAt >= 0f && !pytyvoFired && (timeSinceStart - firstMovedAt) >= 2f && !gameOver) {
+            gameOver = true;
+            Gdx.input.setCursorCatched(false);
+            Gdx.input.setInputProcessor(gameOverStage);
+        }
+
+        if (timeSinceStart >= 25f && !warningTriggered) {
+            warningTriggered = true;
+            playRingTone();
+        }
+
+        if (!thirtySecEventFired && timeSinceStart >= nextCycleAt) {
             thirtySecEventFired = true;
             eventFiredAt = timeSinceStart;
             flickerRoomIdx = getRoomLightIndex();
@@ -133,30 +248,57 @@ public class IanGame extends ApplicationAdapter {
             lightsOutAt    = timeSinceStart;
             renderer.setLightsOut(true);
         }
-        if (lightsOut && (timeSinceStart - lightsOutAt) >= 10f) {
+        if (!gameOver && lightsOut && (timeSinceStart - lightsOutAt) >= 10f) {
             lightsOut = false;
+            lightsRestoredAt = timeSinceStart;
             renderer.setLightsOut(false);
             if (flickerRoomIdx >= 0) renderer.setRoomFlickerIntense(flickerRoomIdx, false);
             doorManager.setLockOpen(false);
+            thirtySecEventFired = false;
+            lightsOutFired = false;
+            nextCycleAt = timeSinceStart + 30f;
+            isFirstCycle = false;
+            staticLevel   = 0f;
+            firstMovedAt  = -1f;   // reset so next cycle starts fresh
+            pytyvoFired   = false;
+        }
+        if (lightsRestoredAt >= 0 && !postLightsWarningFired && (timeSinceStart - lightsRestoredAt) >= 2f) {
+            postLightsWarningFired = true;
+            playRingTone();
         }
 
         if (flashlightOn) renderer.drawBatteryMeter(batteryLevel, infoTextsEnabled && flashlightOnCount >= 2);
 
+        // Collect all overlay texts into one list so they stack without overlap.
+        // "This door is locked." always shows (not gated by infoTextsEnabled).
+        java.util.List<String> overlayTexts = new java.util.ArrayList<>();
+        if (inventoryShownAt >= 0f && (timeSinceStart - inventoryShownAt) < 3f)
+            overlayTexts.add("Press O to obtain a key");
+        if (lockedDoorMsgAt >= 0f && (timeSinceStart - lockedDoorMsgAt) < 3f)
+            overlayTexts.add("This door is locked.");
         if (infoTextsEnabled) {
-            java.util.List<String> overlayTexts = new java.util.ArrayList<>();
+            if (isFirstCycle && timeSinceStart >= 25f && !thirtySecEventFired)  overlayTexts.add("**Only use flashlight when needed.**");
+            if (postLightsWarningFired && (timeSinceStart - lightsRestoredAt) < 7f) overlayTexts.add("**When the lights are out, don't move.**");
+            if (pytyvoFired && (timeSinceStart - pytyvoFiredAt) < 5f) overlayTexts.add("**????? effect**");
             String nearLabel = getNearbyObjectLabel();
             if (nearLabel != null)                              overlayTexts.add(nearLabel);
             if (timeSinceStart >= 10f && !flashlightEverUsed)  overlayTexts.add("Press F to toggle the flashlight");
             if (isNearTileType(7) && !doorEverInteracted)      overlayTexts.add("Press E to open doors");
-            if (!overlayTexts.isEmpty())
-                renderer.drawOverlayTexts(overlayTexts.toArray(new String[0]));
         }
+        if (!overlayTexts.isEmpty())
+            renderer.drawOverlayTexts(overlayTexts.toArray(new String[0]));
 
         if (!Gdx.input.isCursorCatched()) {
             settingsStage.act(dt);
             settingsStage.draw();
         }
 
+        if (staticLevel > 0f) {
+            if (!pytyvoFired) renderer.drawRedTint(staticLevel * 0.45f);
+            renderer.drawStaticOverlay(staticLevel, pytyvoFired);
+        }
+        if (inventoryShownAt >= 0f && (timeSinceStart - inventoryShownAt) < 3f)
+            renderer.drawInventory(keysHeld);
         renderer.drawFadeOverlay();
     }
 
@@ -164,12 +306,14 @@ public class IanGame extends ApplicationAdapter {
     public void resize(int width, int height) {
         renderer.resize(width, height);
         settingsStage.getViewport().update(width, height, true);
+        gameOverStage.getViewport().update(width, height, true);
     }
 
     @Override
     public void dispose() {
         renderer.dispose();
         settingsStage.dispose();
+        gameOverStage.dispose();
         skin.dispose();
     }
 
@@ -194,6 +338,13 @@ public class IanGame extends ApplicationAdapter {
         if (Gdx.input.isKeyPressed(Keys.D))
             strafe(1.0, dt);
 
+        // Obtain a key — only works once per run
+        if (Gdx.input.isKeyJustPressed(Keys.O) && !oKeyUsed) {
+            oKeyUsed = true;
+            keysHeld++;
+            inventoryShownAt = timeSinceStart;
+        }
+
         // Toggle flashlight
         if (Gdx.input.isKeyJustPressed(Keys.F)) {
             flashlightOn       = !flashlightOn;
@@ -202,10 +353,34 @@ public class IanGame extends ApplicationAdapter {
             renderer.setFlashlight(flashlightOn);
         }
 
-        // Interact with door
+        // Interact with door or cabinet
         if (Gdx.input.isKeyJustPressed(Keys.E)) {
-            doorManager.tryInteract(player.x, player.y, player.dirX, player.dirY);
-            doorEverInteracted = true;
+            int[] lockedDoor = doorManager.getLockedDoorInRange(player.x, player.y, player.dirX, player.dirY);
+            int nearCab = getNearCabinetIndex();
+            if (isNearTileType(9)) {
+                // Emergency exit — always locked
+                lockedDoorMsgAt = timeSinceStart;
+            } else if (lockedDoor != null) {
+                if (keysHeld > 0) {
+                    // Consume one key and unlock the door
+                    keysHeld--;
+                    doorManager.unlockDoor(lockedDoor[0], lockedDoor[1]);
+                    renderer.setLockedDoors(doorManager.getLockedDoorKeys());
+                    inventoryShownAt = timeSinceStart;
+                } else {
+                    lockedDoorMsgAt = timeSinceStart;
+                }
+            } else if (nearCab >= 0) {
+                // Open cabinet — pick up key if present and not yet looted
+                if (cabinetKeyIndices.contains(nearCab) && !lootedCabinets.contains(nearCab)) {
+                    keysHeld++;
+                    lootedCabinets.add(nearCab);
+                }
+                inventoryShownAt = timeSinceStart;
+            } else {
+                doorManager.tryInteract(player.x, player.y, player.dirX, player.dirY);
+                doorEverInteracted = true;
+            }
         }
 
         // Keyboard rotate
@@ -249,39 +424,105 @@ public class IanGame extends ApplicationAdapter {
     /** Returns the label for the nearest interactable object, or null if none. */
     private String getNearbyObjectLabel() {
         if (isNearTable())          return "This is a table";
+        if (isNearRedCabinet())     return "Left click to enable ?????? effect";
         if (isNearCabinet())        return "This is a cabinet";
         if (isNearTileType(7))      return "This is a door";
-        if (isNearTileType(8))      return "This is a window";
         return null;
     }
 
+    /** Generates and plays a short ring tone on a background thread. */
+    private void playRingTone() {
+        Thread t = new Thread(() -> {
+            final int   SAMPLE_RATE = 44100;
+            final float DURATION    = 0.3f;
+            final float FREQUENCY   = 1200f;
+            int   numSamples = (int)(SAMPLE_RATE * DURATION);
+            short[] samples  = new short[numSamples];
+            for (int i = 0; i < numSamples; i++) {
+                float time     = (float) i / SAMPLE_RATE;
+                float envelope = 1.0f - (time / DURATION);   // linear decay
+                samples[i] = (short)(envelope * 32767 * Math.sin(2 * Math.PI * FREQUENCY * time));
+            }
+            com.badlogic.gdx.audio.AudioDevice device = Gdx.audio.newAudioDevice(SAMPLE_RATE, true);
+            device.writeSamples(samples, 0, samples.length);
+            device.dispose();
+        });
+        t.setDaemon(true);
+        t.start();
+    }
+
     /**
-     * Returns the LIGHTS index (0-8) for the room the player is currently in,
+     * Returns the room light index for the room the player is currently in,
      * or -1 if they are in a corridor or gap.
      */
     private int getRoomLightIndex() {
-        double x = player.x, y = player.y;
-        int col = (x >= 1 && x < 9)  ? 0 : (x >= 13 && x < 25) ? 1 : (x >= 28 && x < 35) ? 2 : -1;
-        int row = (y >= 1 && y < 9)  ? 0 : (y >= 13 && y < 23) ? 1 : (y >= 26 && y < 35) ? 2 : -1;
-        if (col < 0 || row < 0) return -1;
-        return row * 3 + col;
+        for (int i = 0; i < roomsData.length; i++) {
+            int cs = roomsData[i][0], rs = roomsData[i][1];
+            int w  = roomsData[i][2], h  = roomsData[i][3];
+            if (player.x >= cs && player.x < cs + w &&
+                player.y >= rs && player.y < rs + h)
+                return i;
+        }
+        return -1;
     }
 
     /** Returns true if the player is close enough to a table to trigger the info label. */
     private boolean isNearTable() {
         final double TOUCH_RADIUS = TABLE_RADIUS + 0.2;
         double r2 = TOUCH_RADIUS * TOUCH_RADIUS;
-        for (float[] t : RayCaster.TABLES) {
+        for (float[] t : tables) {
             double dx = player.x - t[0], dy = player.y - t[1];
             if (dx * dx + dy * dy < r2) return true;
         }
         return false;
     }
 
+    /** Generates 3–5 blood splatter positions inside every room except the player's current room. */
+    private float[][] generateBloodSpots() {
+        int playerRoom = getRoomLightIndex();
+        java.util.List<float[]> spots = new java.util.ArrayList<>();
+        java.util.Random rng = new java.util.Random();
+        for (int i = 0; i < roomsData.length; i++) {
+            if (i == playerRoom) continue;
+            int cs = roomsData[i][0], rs = roomsData[i][1];
+            int w  = roomsData[i][2], h  = roomsData[i][3];
+            int count = 3 + rng.nextInt(3);
+            for (int j = 0; j < count; j++) {
+                float x = cs + 1f + rng.nextFloat() * (w - 2f);
+                float y = rs + 1f + rng.nextFloat() * (h - 2f);
+                spots.add(new float[]{x, y});
+            }
+        }
+        return spots.toArray(new float[0][]);
+    }
+
+    /** Returns true if the player is within interaction range of any red cabinet (every 5th, 1-indexed). */
+    private boolean isNearRedCabinet() {
+        final float margin = 0.5f;
+        for (int i = 0; i < cabinetBoxes.length; i++) {
+            if ((i + 1) % 5 != 0) continue;
+            float[] c = cabinetBoxes[i];
+            if (player.x > c[0] - c[2] - margin && player.x < c[0] + c[2] + margin &&
+                player.y > c[1] - c[3] - margin && player.y < c[1] + c[3] + margin) return true;
+        }
+        return false;
+    }
+
+    /** Returns the index of the cabinet the player is within interaction range of, or -1. */
+    private int getNearCabinetIndex() {
+        final float margin = 0.5f;
+        for (int i = 0; i < cabinetBoxes.length; i++) {
+            float[] c = cabinetBoxes[i];
+            if (player.x > c[0] - c[2] - margin && player.x < c[0] + c[2] + margin &&
+                player.y > c[1] - c[3] - margin && player.y < c[1] + c[3] + margin) return i;
+        }
+        return -1;
+    }
+
     /** Returns true if the player is within interaction range of any cabinet. */
     private boolean isNearCabinet() {
         final float margin = 0.3f;
-        for (float[] c : RayCaster.CABINET_BOXES) {
+        for (float[] c : cabinetBoxes) {
             if (player.x > c[0] - c[2] - margin && player.x < c[0] + c[2] + margin &&
                 player.y > c[1] - c[3] - margin && player.y < c[1] + c[3] + margin) return true;
         }
@@ -301,7 +542,7 @@ public class IanGame extends ApplicationAdapter {
     /** Returns true if the given position is within TABLE_RADIUS of any table. */
     private boolean tableBlocks(double x, double y) {
         double r2 = TABLE_RADIUS * TABLE_RADIUS;
-        for (float[] t : RayCaster.TABLES) {
+        for (float[] t : tables) {
             double dx = x - t[0], dy = y - t[1];
             if (dx * dx + dy * dy < r2) return true;
         }
@@ -311,12 +552,135 @@ public class IanGame extends ApplicationAdapter {
     /** Returns true if the given position is inside any cabinet AABB (with a small margin). */
     private boolean cabinetBlocks(double x, double y) {
         final float margin = 0.05f;
-        for (float[] c : RayCaster.CABINET_BOXES) {
+        for (float[] c : cabinetBoxes) {
             if (x > c[0] - c[2] - margin && x < c[0] + c[2] + margin &&
                 y > c[1] - c[3] - margin && y < c[1] + c[3] + margin) return true;
         }
         return false;
     }
+
+    // ── Game over UI ──────────────────────────────────────────────────────────
+
+    private void buildGameOverUI() {
+        gameOverStage = new Stage(new ScreenViewport());
+
+        Label title = new Label("GAME OVER", skin);
+        Label retry = new Label("  [ Retry ]  ", skin);
+        retry.addListener(new ClickListener() {
+            @Override public void clicked(InputEvent event, float x, float y) { restartGame(); }
+        });
+
+        Table panel = new Table();
+        panel.setBackground(new TextureRegionDrawable(skin.get("panel-bg", Texture.class)));
+        panel.pad(32);
+        panel.add(title).padBottom(20).row();
+        panel.add(retry);
+
+        Table root = new Table();
+        root.setFillParent(true);
+        root.center();
+        root.add(panel);
+        gameOverStage.addActor(root);
+    }
+
+    private void restartGame() {
+        MapGenerator.GeneratedMap gen = MapGenerator.generate(new java.util.Random());
+        map          = new GameMap(gen.grid);
+        player       = new Player(gen.spawnX, gen.spawnY);
+        doorManager  = new DoorManager(map);
+        tables       = gen.tables;
+        cabinetBoxes = gen.cabinetBoxes;
+        roomsData    = gen.rooms;
+        renderer.setWorldObjects(gen.lights, gen.tables, gen.cabinetBoxes);
+        doorManager.setLockedDoors(gen.lockedDoorKeys);
+        renderer.setLockedDoors(gen.lockedDoorKeys);
+        cabinetKeyIndices = gen.cabinetKeyIndices;
+        map.outerMargin   = gen.outerMargin;
+        hallwayEndpoints  = gen.hallwayEndpoints;
+        hallwayCloseTimes = new float[hallwayEndpoints.length];
+        hallwayEntered    = new java.util.HashSet<>();
+        java.util.Arrays.fill(hallwayCloseTimes, -1f);
+        lootedCabinets    = new java.util.HashSet<>();
+        keysHeld          = 0;
+        inventoryShownAt  = -1f;
+        oKeyUsed          = false;
+        renderer.resetFade();
+        lastPlayerX = player.x;
+        lastPlayerY = player.y;
+
+        timeSinceStart        = 0f;
+        flashlightOn          = false;
+        flashlightEverUsed    = false;
+        flashlightOnCount     = 0;
+        doorEverInteracted    = false;
+        warningTriggered      = false;
+        thirtySecEventFired   = false;
+        eventFiredAt          = -1f;
+        flickerRoomIdx        = -1;
+        lightsOutFired        = false;
+        lightsOut             = false;
+        lightsOutAt           = -1f;
+        lightsRestoredAt      = -1f;
+        postLightsWarningFired = false;
+        nextCycleAt           = 30f;
+        isFirstCycle          = true;
+        staticLevel           = 0f;
+        pytyvoFired           = false;
+        pytyvoFiredAt         = -1f;
+        lastRoomIdx           = -2;
+        redTintLevel          = 0f;
+        bloodSpots            = new float[0][2];
+        renderer.setBloodSpots(bloodSpots);
+        lockedDoorMsgAt       = -1f;
+        gameOver              = false;
+        batteryLevel          = 1.0f;
+
+        renderer.setFlashlight(false);
+        renderer.setLightsOut(false);
+        Gdx.input.setCursorCatched(true);
+        Gdx.input.setInputProcessor(settingsStage);
+    }
+
+    // ── Hallway entry / end detection ────────────────────────────────────────
+
+    /**
+     * Detects when the player steps into an exterior hallway and schedules the
+     * door to close 1 second later.
+     */
+    private void checkHallwayEntry(float dt) {
+        for (int i = 0; i < hallwayEndpoints.length; i++) {
+            int[] ep = hallwayEndpoints[i];   // {doorCol, doorRow, endCol, endRow}
+
+            // Fire the pending close+lock once the timer expires.
+            if (hallwayCloseTimes[i] >= 0f) {
+                hallwayCloseTimes[i] -= dt;
+                if (hallwayCloseTimes[i] <= 0f) {
+                    doorManager.lockDoor(ep[0], ep[1]);   // closes and permanently locks
+                    renderer.setLockedDoors(doorManager.getLockedDoorKeys());
+                    hallwayCloseTimes[i] = -1f;
+                }
+                continue;
+            }
+
+            if (hallwayEntered.contains(i)) continue;
+
+            // Derive the hallway direction from door → end.
+            int dirR = Integer.signum(ep[3] - ep[1]);
+            int dirC = Integer.signum(ep[2] - ep[0]);
+
+            // Component of player offset along and across the hallway axis.
+            double offR = player.y - (ep[1] + 0.5);
+            double offC = player.x - (ep[0] + 0.5);
+            double depth = offR * dirR + offC * dirC;   // positive = inside hallway
+            double lat   = Math.abs(offR * dirC - offC * dirR); // perpendicular
+
+            if (depth > 0.6 && depth < 4.0 && lat < 1.2) {
+                hallwayEntered.add(i);
+                hallwayCloseTimes[i] = 1.0f;  // close 1 second after entry
+            }
+        }
+    }
+
 
     // ── Settings UI ───────────────────────────────────────────────────────────
 
@@ -344,6 +708,15 @@ public class IanGame extends ApplicationAdapter {
                 infoToggleLabel.setText("Info texts: " + (infoTextsEnabled ? "ON" : "OFF"));
             }
         });
+        minimapToggleLabel = new Label("Minimap: ON", skin);
+        minimapToggleLabel.addListener(new ClickListener() {
+            @Override
+            public void clicked(InputEvent event, float x, float y) {
+                boolean nowOn = !renderer.isShowMinimap();
+                renderer.setShowMinimap(nowOn);
+                minimapToggleLabel.setText("Minimap: " + (nowOn ? "ON" : "OFF"));
+            }
+        });
         Label closeX = new Label("  X  ", skin);
         closeX.addListener(new ClickListener() {
             @Override
@@ -361,7 +734,8 @@ public class IanGame extends ApplicationAdapter {
         // Remaining rows span both columns
         table.add(slider).width(300).padBottom(6).colspan(2).row();
         table.add(valueLabel).padBottom(20).colspan(2).row();
-        table.add(infoToggleLabel).left().colspan(2);
+        table.add(infoToggleLabel).left().colspan(2).row();
+        table.add(minimapToggleLabel).left().padTop(8).colspan(2);
         Table root = new Table();
         root.setFillParent(true);
         root.center();

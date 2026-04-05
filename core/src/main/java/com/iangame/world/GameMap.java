@@ -131,6 +131,8 @@ public class GameMap {
     private final int[][] grid;
     public  final int width;
     public  final int height;
+    /** Number of outer-margin tiles on each side (border + hallway depth). */
+    public  int outerMargin = 1;
 
     // ── Constructors ──────────────────────────────────────────────────────────
 

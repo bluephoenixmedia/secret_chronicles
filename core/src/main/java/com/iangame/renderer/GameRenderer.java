@@ -39,7 +39,9 @@ public class GameRenderer implements Disposable {
 
     // ── Minimap config ────────────────────────────────────────────────────────
 
-    private static final boolean SHOW_MINIMAP  = true;
+    private boolean showMinimap = true;
+    public void setShowMinimap(boolean show) { this.showMinimap = show; }
+    public boolean isShowMinimap() { return showMinimap; }
     private static final int     MINIMAP_TILE  = 3;    // pixels per map tile
     private static final int     MINIMAP_PAD   = 8;    // screen-edge padding
 
@@ -64,6 +66,19 @@ public class GameRenderer implements Disposable {
 
     private static final float FADE_DURATION = 1.5f;
     private float fadeAlpha = 1.0f;
+
+    // ── Static / game-over overlay ────────────────────────────────────────────
+
+    private Pixmap  staticPixmap;
+    private Texture staticTexture;
+    private static final int STATIC_W = 160;
+    private static final int STATIC_H = 90;
+    private final java.util.Random staticRng = new java.util.Random();
+
+    /** Keys of locked doors (col*10000+row) shown in red on the minimap. */
+    private java.util.Set<Integer> lockedDoorKeys = new java.util.HashSet<>();
+
+    public void setLockedDoors(java.util.Set<Integer> keys) { this.lockedDoorKeys = keys; }
 
     // ── Constructor ───────────────────────────────────────────────────────────
 
@@ -93,6 +108,14 @@ public class GameRenderer implements Disposable {
 
     /** Turns all room lights off (true) or back on (false). */
     public void setLightsOut(boolean out) { rayCaster.setLightsOut(out); }
+
+    /** Loads procedurally generated world objects into the raycaster. */
+    public void setWorldObjects(float[][] lights, float[][] tables, float[][] cabinetBoxes) {
+        rayCaster.setWorldObjects(lights, tables, cabinetBoxes);
+    }
+
+    /** Sets blood splatter positions rendered on the floor. */
+    public void setBloodSpots(float[][] spots) { rayCaster.setBloodSpots(spots); }
 
     /**
      * Draws a battery meter in the bottom-right corner.
@@ -147,19 +170,34 @@ public class GameRenderer implements Disposable {
      * Each entry is offset downward by the font line height + a small gap,
      * so multiple simultaneous labels never overlap.
      */
+    /**
+     * Draws one or more overlay texts stacked in the top-right corner.
+     * Wrap a text in ** ** (e.g. {@code "**Hello**"}) to render it bold
+     * (simulated via a 1-pixel offset second draw pass).
+     */
     public void drawOverlayTexts(String... texts) {
         if (texts.length == 0) return;
-        final int   PAD      = 10;
-        final float LINE_GAP = 4f;
+        final int   PAD       = 10;
+        final float LINE_GAP  = 4f;
+        final float BOLD_PAD  = 6f;  // extra space inserted before/after a bold entry
         float y = RENDER_HEIGHT - PAD;
 
         batch.setProjectionMatrix(camera.combined);
         batch.begin();
-        for (String text : texts) {
-            infoLayout.setText(infoFont, text);
+        for (int i = 0; i < texts.length; i++) {
+            boolean bold = texts[i].startsWith("**") && texts[i].endsWith("**");
+            // Push down before a bold entry if preceded by a non-bold one
+            if (bold && i > 0 && !(texts[i-1].startsWith("**") && texts[i-1].endsWith("**")))
+                y -= BOLD_PAD;
+            String display = bold ? texts[i].substring(2, texts[i].length() - 2) : texts[i];
+            infoLayout.setText(infoFont, display);
             float x = RENDER_WIDTH - PAD - infoLayout.width;
             infoFont.draw(batch, infoLayout, x, y);
+            if (bold) infoFont.draw(batch, infoLayout, x + 1f, y);  // second pass = pseudo-bold
             y -= infoFont.getLineHeight() + LINE_GAP;
+            // Push down after a bold entry if followed by a non-bold one
+            if (bold && i < texts.length - 1 && !(texts[i+1].startsWith("**") && texts[i+1].endsWith("**")))
+                y -= BOLD_PAD;
         }
         batch.end();
     }
@@ -176,6 +214,109 @@ public class GameRenderer implements Disposable {
     }
 
     /**
+     * Draws a growing TV-static effect over the screen.
+     * {@code level} ranges 0 (invisible) to 1 (fully covering).
+     * When {@code black} is true the noise pixels are black instead of grey.
+     */
+    public void drawStaticOverlay(float level, boolean black) {
+        if (staticPixmap == null) {
+            staticPixmap  = new Pixmap(STATIC_W, STATIC_H, Pixmap.Format.RGBA8888);
+            staticTexture = new Texture(STATIC_W, STATIC_H, Pixmap.Format.RGBA8888);
+        }
+
+        // Tint underlay
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        shapes.setProjectionMatrix(camera.combined);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+        if (black) shapes.setColor(0f, 0f, 0f, level * 0.07f);
+        else       shapes.setColor(0.45f, 0.45f, 0.45f, level * 0.07f);
+        shapes.rect(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+        shapes.end();
+
+        // Noise pixels — at most ~25% coverage so the scene stays visible underneath
+        staticPixmap.setBlending(Pixmap.Blending.None);
+        int alpha = black ? 255 : Math.min(60, (int)(20 + 40 * level));
+        for (int y = 0; y < STATIC_H; y++) {
+            for (int x = 0; x < STATIC_W; x++) {
+                if (staticRng.nextFloat() < level * 0.25f) {
+                    int g = black ? 0 : 20 + staticRng.nextInt(220);
+                    staticPixmap.drawPixel(x, y, (g << 24) | (g << 16) | (g << 8) | alpha);
+                } else {
+                    staticPixmap.drawPixel(x, y, 0x00000000);
+                }
+            }
+        }
+        staticTexture.draw(staticPixmap, 0, 0);
+
+        batch.setProjectionMatrix(camera.combined);
+        batch.begin();
+        batch.draw(staticTexture, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+        batch.end();
+        Gdx.gl.glDisable(GL20.GL_BLEND);
+    }
+
+    /** Resets the spawn fade so it plays again (used on retry). */
+    public void resetFade() { fadeAlpha = 1.0f; }
+
+    /**
+     * Draws a centred inventory panel listing how many keys the player holds.
+     * Call each frame while the inventory should be visible.
+     */
+    public void drawInventory(int keys) {
+        final int PAD = 14, PANEL_W = 160, PANEL_H = 56;
+        float px = (RENDER_WIDTH  - PANEL_W) / 2f;
+        float py = (RENDER_HEIGHT - PANEL_H) / 2f;
+
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+
+        // Background panel
+        shapes.setProjectionMatrix(camera.combined);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+        shapes.setColor(0.04f, 0.04f, 0.04f, 0.88f);
+        shapes.rect(px, py, PANEL_W, PANEL_H);
+        shapes.end();
+
+        // Border
+        shapes.begin(ShapeRenderer.ShapeType.Line);
+        shapes.setColor(0.6f, 0.6f, 0.6f, 0.9f);
+        shapes.rect(px, py, PANEL_W, PANEL_H);
+        shapes.end();
+
+        // Text
+        batch.setProjectionMatrix(camera.combined);
+        batch.begin();
+        infoLayout.setText(infoFont, "INVENTORY");
+        infoFont.draw(batch, infoLayout,
+                px + (PANEL_W - infoLayout.width) / 2f,
+                py + PANEL_H - PAD);
+
+        String keyLine = keys > 0 ? "Key  x" + keys : "Key  x0  (empty)";
+        infoLayout.setText(infoFont, keyLine);
+        infoFont.draw(batch, infoLayout,
+                px + PAD,
+                py + PANEL_H - PAD - infoFont.getLineHeight() - 6f);
+
+        batch.end();
+
+        Gdx.gl.glDisable(GL20.GL_BLEND);
+    }
+
+    /** Draws a full-screen red tint at the given opacity (0 = none, 1 = solid red). */
+    public void drawRedTint(float level) {
+        if (level <= 0f) return;
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        shapes.setProjectionMatrix(camera.combined);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+        shapes.setColor(1f, 0f, 0f, level);
+        shapes.rect(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+        shapes.end();
+        Gdx.gl.glDisable(GL20.GL_BLEND);
+    }
+
+/**
      * Draws a full-screen black overlay that fades out on spawn.
      * A no-op once the fade has finished. Call last each frame so it covers all other UI.
      */
@@ -222,7 +363,7 @@ public class GameRenderer implements Disposable {
         batch.end();
 
         // 5. Minimap overlay.
-        if (SHOW_MINIMAP) renderMinimap(player, map, doors);
+        if (showMinimap) renderMinimap(player, map, doors);
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -245,41 +386,63 @@ public class GameRenderer implements Disposable {
     private void renderMinimap(Player player, GameMap map, DoorManager doors) {
         shapes.setProjectionMatrix(camera.combined);
         int[][] grid = map.getGrid();
+
+        // Fixed-size scrolling window centred on the player.
+        final int HALF = 15;   // tiles visible on each side of the player
+        final int VIEW = HALF * 2;
+
+        int pCol = (int) player.x;
+        int pRow = (int) player.y;
+
+        // Ideal window: player at the centre.
+        int minCol = pCol - HALF;
+        int minRow = pRow - HALF;
+
+        // Clamp so the window never goes outside the map.
+        minCol = Math.max(0, Math.min(map.width  - VIEW, minCol));
+        minRow = Math.max(0, Math.min(map.height - VIEW, minRow));
+        int maxCol = minCol + VIEW;
+        int maxRow = minRow + VIEW;
+
         int offX = MINIMAP_PAD;
         int offY = MINIMAP_PAD;
 
         shapes.begin(ShapeRenderer.ShapeType.Filled);
 
-        for (int row = 0; row < map.height; row++) {
-            for (int col = 0; col < map.width; col++) {
+        for (int row = minRow; row < maxRow; row++) {
+            for (int col = minCol; col < maxCol; col++) {
                 int tile = grid[row][col];
                 if (tile == 7) {
-                    // Door: amber when closed, green when open
-                    float open = (doors != null) ? doors.getOpenAmount(col, row) : 0f;
-                    shapes.setColor(1f - open * 0.6f, 0.55f + open * 0.35f, 0.0f, 0.95f);
+                    if (doors != null && doors.isLockedDoor(col, row)) {
+                        shapes.setColor(0.85f, 0.1f, 0.1f, 1f);
+                    } else {
+                        float open = (doors != null) ? doors.getOpenAmount(col, row) : 0f;
+                        shapes.setColor(1f - open * 0.6f, 0.55f + open * 0.35f, 0.0f, 0.95f);
+                    }
                 } else if (tile == 8) {
-                    shapes.setColor(0.12f, 0.15f, 0.45f, 0.95f); // window: night sky blue
+                    shapes.setColor(0.12f, 0.15f, 0.45f, 0.95f);
                 } else if (tile == 5) {
-                    shapes.setColor(0.4f, 0.25f, 0.1f, 0.85f);  // dark wood frames
+                    shapes.setColor(0.4f, 0.25f, 0.1f, 0.85f);
                 } else if (tile > 0) {
                     shapes.setColor(0.55f, 0.55f, 0.55f, 0.85f);
                 } else {
                     shapes.setColor(0.08f, 0.08f, 0.08f, 0.7f);
                 }
                 shapes.rect(
-                    offX + col * MINIMAP_TILE,
-                    offY + (map.height - 1 - row) * MINIMAP_TILE,
+                    offX + (col - minCol) * MINIMAP_TILE,
+                    offY + (maxRow - 1 - row) * MINIMAP_TILE,
                     MINIMAP_TILE - 1,
                     MINIMAP_TILE - 1
                 );
             }
         }
 
-        // Player dot.
+        // Player dot — always inside the window (window is clamped to map).
+        float dotR = MINIMAP_TILE * 0.6f;
+        float px = offX + ((float) player.x - minCol) * MINIMAP_TILE;
+        float py = offY + (maxRow - (float) player.y) * MINIMAP_TILE;
         shapes.setColor(1f, 0.9f, 0f, 1f);
-        float px = offX + (float) player.x * MINIMAP_TILE;
-        float py = offY + (map.height - 1 - (float) player.y) * MINIMAP_TILE;
-        shapes.circle(px, py, MINIMAP_TILE * 0.6f);
+        shapes.circle(px, py, dotR);
 
         shapes.end();
     }
@@ -291,5 +454,7 @@ public class GameRenderer implements Disposable {
         batch.dispose();
         shapes.dispose();
         infoFont.dispose();
+        if (staticPixmap  != null) staticPixmap.dispose();
+        if (staticTexture != null) staticTexture.dispose();
     }
 }

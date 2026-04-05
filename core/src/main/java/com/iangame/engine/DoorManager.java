@@ -35,6 +35,54 @@ public class DoorManager {
 
     public void setLockOpen(boolean lock) { this.lockOpen = lock; }
 
+    /** Keys of permanently locked doors (col*10000+row). */
+    private java.util.Set<Integer> lockedDoors = new java.util.HashSet<>();
+
+    public void setLockedDoors(java.util.Set<Integer> keys) { this.lockedDoors = keys; }
+
+    public java.util.Set<Integer> getLockedDoorKeys() { return lockedDoors; }
+
+    public boolean isLockedDoor(int col, int row) { return lockedDoors.contains(key(col, row)); }
+
+    /** True if a locked door exists within interaction range in front of the player. */
+    public boolean isLockedDoorInRange(double px, double py, double dirX, double dirY) {
+        return getLockedDoorInRange(px, py, dirX, dirY) != null;
+    }
+
+    /**
+     * Returns {col, row} of the first locked door within range, or null if none.
+     */
+    public int[] getLockedDoorInRange(double px, double py, double dirX, double dirY) {
+        for (float dist = 0.4f; dist <= 1.6f; dist += 0.4f) {
+            int col = (int)(px + dirX * dist);
+            int row = (int)(py + dirY * dist);
+            if (hasDoor(col, row) && isLockedDoor(col, row)) return new int[]{col, row};
+        }
+        return null;
+    }
+
+    /** Permanently unlocks a door so it can be opened normally. */
+    public void unlockDoor(int col, int row) {
+        lockedDoors.remove(key(col, row));
+    }
+
+    /** Starts closing the door at (col, row) if it is open or opening. */
+    public void closeDoor(int col, int row) {
+        Door d = doors.get(key(col, row));
+        if (d != null && (d.state == DoorState.OPENING || d.state == DoorState.OPEN)) {
+            d.state = DoorState.CLOSING;
+        }
+    }
+
+    /** Permanently locks a door and starts closing it if it is currently open. */
+    public void lockDoor(int col, int row) {
+        lockedDoors.add(key(col, row));
+        Door d = doors.get(key(col, row));
+        if (d != null && d.state != DoorState.CLOSED && d.state != DoorState.CLOSING) {
+            d.state = DoorState.CLOSING;
+        }
+    }
+
     // ── Constructor ───────────────────────────────────────────────────────────
 
     /** Scans {@code map} for tile type 7 and registers a door at each position. */
@@ -68,10 +116,10 @@ public class DoorManager {
 
     // ── Interaction ───────────────────────────────────────────────────────────
 
-    /** Toggles the door at (col, row) between opening and closing. */
+    /** Toggles the door at (col, row) between opening and closing. Locked doors are ignored. */
     public void interact(int col, int row) {
         Door d = doors.get(key(col, row));
-        if (d == null) return;
+        if (d == null || isLockedDoor(col, row)) return;
         if (d.state == DoorState.CLOSED || d.state == DoorState.CLOSING) {
             d.state = DoorState.OPENING;
         } else {

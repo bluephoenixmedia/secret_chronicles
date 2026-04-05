@@ -16,7 +16,7 @@ public class TextureAtlas {
     public static final int TEX_MASK = TEX_SIZE - 1; // safe wrap: TEX_SIZE is pow-2
 
     // wall textures indexed by map tile type (index 0 unused)
-    private final int[][] wall = new int[9][];
+    private final int[][] wall = new int[10][];
     public  final int[]   floor;
     public  final int[]   ceiling;
     /** Billboard sprite for table objects (transparent background). */
@@ -36,6 +36,7 @@ public class TextureAtlas {
         wall[6] = makeTerracotta();
         wall[7] = makeDoorPanel();
         wall[8] = makeWindowNightSky();
+        wall[9] = makeEmergencyExit();
         floor        = makeWornFloorboards();
         ceiling      = makeWaterStainedCeiling();
         tableSprite  = makeTableSprite();
@@ -570,6 +571,99 @@ public class TextureAtlas {
                 t[y * TEX_SIZE + x] = rgba(r, g, b);
             }
         }
+        return t;
+    }
+
+    // ── Wall type 9: emergency exit door with EXIT sign above ─────────────────
+    //   Narrow white door centred on the tile (grey surrounds), red EXIT sign
+    //   across the top, horizontal push-bar at eye level.
+    //
+    //   The raycaster mirrors texX for walls the player faces from inside, so
+    //   characters are pre-mirrored (word reversed, each glyph flipped) so the
+    //   hardware flip produces the correct "EXIT" reading.
+
+    private int[] makeEmergencyExit() {
+        int[] t = new int[TEX_SIZE * TEX_SIZE];
+
+        final int L = 10, R = 53; // door left/right bounds (44 px wide, centred in 64)
+
+        // Grey side-wall margins
+        for (int y = 0; y < TEX_SIZE; y++) {
+            for (int x = 0; x < TEX_SIZE; x++) {
+                if (x < L || x > R) {
+                    int n = hash(x, y, 1003) & 0x0F;
+                    int v = 150 + n - 8;
+                    t[y * TEX_SIZE + x] = rgba(v, v, v);
+                }
+            }
+        }
+
+        // White door body (below the sign)
+        for (int y = 18; y < TEX_SIZE; y++)
+            for (int x = L; x <= R; x++) {
+                int n = hash(x, y, 1001) & 0x0F;
+                int v = 230 + n - 8;
+                t[y * TEX_SIZE + x] = rgba(v, v, v);
+            }
+
+        // Door frame (slightly darker edge on three sides)
+        for (int y = 18; y < TEX_SIZE; y++)
+            for (int x = L; x <= R; x++)
+                if (x == L || x == R || y == 18 || y >= 62)
+                    t[y * TEX_SIZE + x] = rgba(190, 190, 190);
+
+        // Horizontal push-bar at eye level (y 34–38)
+        for (int y = 34; y <= 38; y++)
+            for (int x = L + 3; x <= R - 3; x++)
+                t[y * TEX_SIZE + x] = rgba(155, 162, 172);
+        for (int y = 32; y <= 40; y++) {
+            for (int x = L + 3; x <= L + 7; x++) t[y * TEX_SIZE + x] = rgba(128, 134, 144);
+            for (int x = R - 7; x <= R - 3; x++) t[y * TEX_SIZE + x] = rgba(128, 134, 144);
+        }
+
+        // ── Red EXIT sign (y 0..17, same width as door) ──────────────────────
+        for (int y = 0; y < 18; y++)
+            for (int x = L; x <= R; x++)
+                t[y * TEX_SIZE + x] = rgba(185, 22, 22);
+
+        // Sign border
+        for (int x = L; x <= R; x++) {
+            t[0  * TEX_SIZE + x] = rgba(255, 180, 180);
+            t[17 * TEX_SIZE + x] = rgba(255, 180, 180);
+        }
+        for (int y = 0; y < 18; y++) {
+            t[y * TEX_SIZE + L] = rgba(255, 180, 180);
+            t[y * TEX_SIZE + R] = rgba(255, 180, 180);
+        }
+
+        // "EXIT" pre-mirrored: word order is T,I,X,E and each glyph is flipped
+        // horizontally so the raycaster's texX-flip renders it as "EXIT".
+        int[][] charT_m = {{1,1,1,1,1},{0,0,1,0,0},{0,0,1,0,0},{0,0,1,0,0},{0,0,1,0,0}};
+        int[][] charI_m = {{0,0,1,1,1},{0,0,0,1,0},{0,0,0,1,0},{0,0,0,1,0},{0,0,1,1,1}};
+        int[][] charX_m = {{1,0,0,0,1},{0,1,0,1,0},{0,0,1,0,0},{0,1,0,1,0},{1,0,0,0,1}};
+        int[][] charE_m = {{1,1,1,1,1},{0,0,0,0,1},{0,1,1,1,1},{0,0,0,0,1},{1,1,1,1,1}};
+        int[][][] word   = {charT_m, charI_m, charX_m, charE_m};
+
+        // 2× scale, gap=1 → total = 4*10 + 3*1 = 43 px; centred in 44 px sign
+        int gap = 1, charPx = 10;
+        int totalW = word.length * charPx + (word.length - 1) * gap; // 43
+        int ox = L + (R - L + 1 - totalW) / 2;  // ≈ L
+        int oy = 4;  // vertically centred in 18-px band
+
+        for (int ci = 0; ci < word.length; ci++) {
+            int cx = ox + ci * (charPx + gap);
+            for (int row = 0; row < 5; row++)
+                for (int col = 0; col < 5; col++)
+                    if (word[ci][row][col] == 1)
+                        for (int dy = 0; dy < 2; dy++)
+                            for (int dx = 0; dx < 2; dx++) {
+                                int px = cx + col * 2 + dx;
+                                int py = oy + row * 2 + dy;
+                                if (px >= L && px <= R && py >= 0 && py < 18)
+                                    t[py * TEX_SIZE + px] = rgba(255, 255, 255);
+                            }
+        }
+
         return t;
     }
 

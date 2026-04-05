@@ -10,6 +10,11 @@ application {
     mainClass = 'com.iangame.desktop.DesktopLauncher'
 }
 
+run {
+    // Assets folder is the working directory so Gdx.files.internal() resolves correctly.
+    workingDir = rootProject.file('assets')
+}
+
 dependencies {
     implementation project(':core')
     implementation "com.badlogicgames.gdx:gdx-backend-lwjgl3:$gdxVersion"
