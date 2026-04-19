@@ -304,6 +304,74 @@ public class GameRenderer implements Disposable {
     }
 
     /** Draws a full-screen red tint at the given opacity (0 = none, 1 = solid red). */
+    /**
+     * Draws a simple cabinet inventory panel in the centre of the screen.
+     *
+     * @param hasKey   true if this cabinet still holds an un-looted key
+     */
+    public void drawCabinetUI(boolean hasKey) {
+        final int PW = 260, PH = 160;
+        final int PX = (RENDER_WIDTH  - PW) / 2;
+        final int PY = (RENDER_HEIGHT - PH) / 2;
+
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        Gdx.gl.glBlendFunc(GL20.GL_SRC_ALPHA, GL20.GL_ONE_MINUS_SRC_ALPHA);
+        shapes.setProjectionMatrix(camera.combined);
+        shapes.begin(ShapeRenderer.ShapeType.Filled);
+        // dark background
+        shapes.setColor(0f, 0f, 0f, 0.82f);
+        shapes.rect(PX, PY, PW, PH);
+        shapes.end();
+
+        // border
+        shapes.begin(ShapeRenderer.ShapeType.Line);
+        shapes.setColor(0.7f, 0.7f, 0.7f, 1f);
+        shapes.rect(PX, PY, PW, PH);
+        shapes.end();
+
+        if (hasKey) {
+            // key icon — a small filled yellow rect to represent the key
+            final int KW = 40, KH = 20;
+            final int KX = PX + (PW - KW) / 2;
+            final int KY = PY + PH / 2;
+            shapes.begin(ShapeRenderer.ShapeType.Filled);
+            shapes.setColor(1f, 0.85f, 0f, 1f);
+            shapes.rect(KX, KY, KW, KH);
+            // key bow (circle-ish square)
+            shapes.rect(KX - 14, KY - 4, 18, 28);
+            shapes.end();
+            shapes.begin(ShapeRenderer.ShapeType.Line);
+            shapes.setColor(0.6f, 0.5f, 0f, 1f);
+            shapes.rect(KX - 14, KY - 4, 18, 28);
+            shapes.rect(KX, KY, KW, KH);
+            shapes.end();
+        }
+
+        Gdx.gl.glDisable(GL20.GL_BLEND);
+
+        batch.setProjectionMatrix(camera.combined);
+        batch.begin();
+        // title
+        infoLayout.setText(infoFont, "Cabinet");
+        infoFont.draw(batch, infoLayout, PX + (PW - infoLayout.width) / 2f, PY + PH - 10f);
+        // item line
+        String itemText = hasKey ? "Key" : "(empty)";
+        infoLayout.setText(infoFont, itemText);
+        infoFont.draw(batch, infoLayout, PX + (PW - infoLayout.width) / 2f, PY + PH / 2f - 28f);
+        // instruction
+        String hint = hasKey ? "Left click to take key" : "Press E to close";
+        infoLayout.setText(infoFont, hint);
+        infoFont.draw(batch, infoLayout, PX + (PW - infoLayout.width) / 2f, PY + 18f);
+        batch.end();
+    }
+
+    /** Spawns the 3-D shadow figure in the world at (x,y) moving at (vx,vy) tiles/s. */
+    public void setShadowFigure(double x, double y, double vx, double vy, double maxDist) {
+        rayCaster.setShadowFigure(x, y, vx, vy, maxDist);
+    }
+
+    public boolean isShadowFigureActive() { return rayCaster.isShadowFigureActive(); }
+
     public void drawRedTint(float level) {
         if (level <= 0f) return;
         Gdx.gl.glEnable(GL20.GL_BLEND);

@@ -17,6 +17,7 @@ import com.badlogic.gdx.scenes.scene2d.InputEvent;
 import com.badlogic.gdx.scenes.scene2d.utils.ChangeListener;
 import com.badlogic.gdx.scenes.scene2d.utils.ClickListener;
 import com.badlogic.gdx.scenes.scene2d.utils.TextureRegionDrawable;
+import com.badlogic.gdx.audio.Music;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
 import com.iangame.engine.DoorManager;
 import com.iangame.player.Player;
@@ -99,8 +100,11 @@ public class IanGame extends ApplicationAdapter {
     private java.util.Set<Integer> hallwayEntered = new java.util.HashSet<>();
     private java.util.Set<Integer> cabinetKeyIndices = new java.util.HashSet<>();
     private java.util.Set<Integer> lootedCabinets    = new java.util.HashSet<>();
+    /** Index of the cabinet whose inventory is currently open, or -1 if none. */
+    private int     openCabinetIndex       = -1;
+
+    private Music   bgMusic;
     private int     keysHeld               = 0;
-    private float   inventoryShownAt       = -1f;
     private boolean oKeyUsed               = false;
     /** Battery level 0..1; drains while flashlight is on (~3 minutes total). */
     private float   batteryLevel     = 1.0f;
@@ -140,6 +144,13 @@ public class IanGame extends ApplicationAdapter {
         lastPlayerX = player.x;
         lastPlayerY = player.y;
 
+        bgMusic = loadMusic("sounds/music/SCSOUNDTRCK1.mp3");
+        if (bgMusic != null) {
+            bgMusic.setLooping(true);
+            bgMusic.setVolume(0.6f);
+            bgMusic.play();
+        }
+
         buildSettingsUI();
         buildGameOverUI();
         Gdx.input.setInputProcessor(settingsStage);
@@ -160,6 +171,20 @@ public class IanGame extends ApplicationAdapter {
             playRingTone();
             bloodSpots = generateBloodSpots();
             renderer.setBloodSpots(bloodSpots);
+        }
+
+        // Cabinet inventory — left click to take key while open
+        if (openCabinetIndex >= 0) {
+            // Close if player walked away
+            if (getNearCabinetIndex() != openCabinetIndex) {
+                openCabinetIndex = -1;
+            } else if (Gdx.input.isButtonJustPressed(Buttons.LEFT)) {
+                if (cabinetKeyIndices.contains(openCabinetIndex) && !lootedCabinets.contains(openCabinetIndex)) {
+                    keysHeld++;
+                    lootedCabinets.add(openCabinetIndex);
+                }
+                openCabinetIndex = -1;
+            }
         }
 
         // Fade static to 0 while pytyvo is active
@@ -247,11 +272,13 @@ public class IanGame extends ApplicationAdapter {
             lightsOut      = true;
             lightsOutAt    = timeSinceStart;
             renderer.setLightsOut(true);
+            if (bgMusic != null) bgMusic.pause();
         }
         if (!gameOver && lightsOut && (timeSinceStart - lightsOutAt) >= 10f) {
             lightsOut = false;
             lightsRestoredAt = timeSinceStart;
             renderer.setLightsOut(false);
+            if (bgMusic != null) bgMusic.play();
             if (flickerRoomIdx >= 0) renderer.setRoomFlickerIntense(flickerRoomIdx, false);
             doorManager.setLockOpen(false);
             thirtySecEventFired = false;
@@ -272,8 +299,6 @@ public class IanGame extends ApplicationAdapter {
         // Collect all overlay texts into one list so they stack without overlap.
         // "This door is locked." always shows (not gated by infoTextsEnabled).
         java.util.List<String> overlayTexts = new java.util.ArrayList<>();
-        if (inventoryShownAt >= 0f && (timeSinceStart - inventoryShownAt) < 3f)
-            overlayTexts.add("Press O to obtain a key");
         if (lockedDoorMsgAt >= 0f && (timeSinceStart - lockedDoorMsgAt) < 3f)
             overlayTexts.add("This door is locked.");
         if (infoTextsEnabled) {
@@ -288,6 +313,12 @@ public class IanGame extends ApplicationAdapter {
         if (!overlayTexts.isEmpty())
             renderer.drawOverlayTexts(overlayTexts.toArray(new String[0]));
 
+        if (openCabinetIndex >= 0) {
+            boolean hasKey = cabinetKeyIndices.contains(openCabinetIndex)
+                          && !lootedCabinets.contains(openCabinetIndex);
+            renderer.drawCabinetUI(hasKey);
+        }
+
         if (!Gdx.input.isCursorCatched()) {
             settingsStage.act(dt);
             settingsStage.draw();
@@ -297,8 +328,6 @@ public class IanGame extends ApplicationAdapter {
             if (!pytyvoFired) renderer.drawRedTint(staticLevel * 0.45f);
             renderer.drawStaticOverlay(staticLevel, pytyvoFired);
         }
-        if (inventoryShownAt >= 0f && (timeSinceStart - inventoryShownAt) < 3f)
-            renderer.drawInventory(keysHeld);
         renderer.drawFadeOverlay();
     }
 
@@ -311,6 +340,7 @@ public class IanGame extends ApplicationAdapter {
 
     @Override
     public void dispose() {
+        if (bgMusic != null) { bgMusic.stop(); bgMusic.dispose(); }
         renderer.dispose();
         settingsStage.dispose();
         gameOverStage.dispose();
@@ -342,7 +372,6 @@ public class IanGame extends ApplicationAdapter {
         if (Gdx.input.isKeyJustPressed(Keys.O) && !oKeyUsed) {
             oKeyUsed = true;
             keysHeld++;
-            inventoryShownAt = timeSinceStart;
         }
 
         // Toggle flashlight
@@ -366,17 +395,12 @@ public class IanGame extends ApplicationAdapter {
                     keysHeld--;
                     doorManager.unlockDoor(lockedDoor[0], lockedDoor[1]);
                     renderer.setLockedDoors(doorManager.getLockedDoorKeys());
-                    inventoryShownAt = timeSinceStart;
                 } else {
                     lockedDoorMsgAt = timeSinceStart;
                 }
             } else if (nearCab >= 0) {
-                // Open cabinet — pick up key if present and not yet looted
-                if (cabinetKeyIndices.contains(nearCab) && !lootedCabinets.contains(nearCab)) {
-                    keysHeld++;
-                    lootedCabinets.add(nearCab);
-                }
-                inventoryShownAt = timeSinceStart;
+                // Toggle cabinet inventory open/closed
+                openCabinetIndex = (openCabinetIndex == nearCab) ? -1 : nearCab;
             } else {
                 doorManager.tryInteract(player.x, player.y, player.dirX, player.dirY);
                 doorEverInteracted = true;
@@ -421,12 +445,40 @@ public class IanGame extends ApplicationAdapter {
         return cell == 0 || (cell == 7 && doorManager.isPassable(col, row));
     }
 
+    /**
+     * Locates a music file by trying several paths relative to the working
+     * directory (handles both "run from assets/" and "run from project root").
+     * Returns null and logs a warning if the file cannot be found.
+     */
+    private com.badlogic.gdx.audio.Music loadMusic(String relativePath) {
+        String[] candidates = {
+            relativePath,                   // when workingDir = assets/
+            "assets/" + relativePath,       // when workingDir = project root
+            "../assets/" + relativePath     // when workingDir = desktop/
+        };
+        for (String candidate : candidates) {
+            java.io.File f = new java.io.File(candidate);
+            if (!f.isAbsolute())
+                f = new java.io.File(System.getProperty("user.dir"), candidate);
+            if (f.exists()) {
+                return Gdx.audio.newMusic(Gdx.files.absolute(f.getAbsolutePath()));
+            }
+        }
+        Gdx.app.error("IanGame", "Music file not found: " + relativePath + " (tried from " + System.getProperty("user.dir") + ")");
+        return null;
+    }
+
     /** Returns the label for the nearest interactable object, or null if none. */
     private String getNearbyObjectLabel() {
-        if (isNearTable())          return "This is a table";
-        if (isNearRedCabinet())     return "Left click to enable ?????? effect";
-        if (isNearCabinet())        return "This is a cabinet";
-        if (isNearTileType(7))      return "This is a door";
+        if (isNearTable()) return "This is a table";
+        if (isNearRedCabinet()) return "Left click to enable ?????? effect";
+        int nearCab = getNearCabinetIndex();
+        if (nearCab >= 0 && openCabinetIndex != nearCab) {
+            if (cabinetKeyIndices.contains(nearCab) && !lootedCabinets.contains(nearCab))
+                return "This cabinet contains a key  [E]";
+            return "This is a cabinet  [E]";
+        }
+        if (isNearTileType(7)) return "This is a door";
         return null;
     }
 
@@ -601,8 +653,8 @@ public class IanGame extends ApplicationAdapter {
         hallwayEntered    = new java.util.HashSet<>();
         java.util.Arrays.fill(hallwayCloseTimes, -1f);
         lootedCabinets    = new java.util.HashSet<>();
+        openCabinetIndex  = -1;
         keysHeld          = 0;
-        inventoryShownAt  = -1f;
         oKeyUsed          = false;
         renderer.resetFade();
         lastPlayerX = player.x;
@@ -637,6 +689,7 @@ public class IanGame extends ApplicationAdapter {
 
         renderer.setFlashlight(false);
         renderer.setLightsOut(false);
+        if (bgMusic != null) { bgMusic.stop(); bgMusic.play(); }
         Gdx.input.setCursorCatched(true);
         Gdx.input.setInputProcessor(settingsStage);
     }
@@ -677,10 +730,23 @@ public class IanGame extends ApplicationAdapter {
             if (depth > 0.6 && depth < 4.0 && lat < 1.2) {
                 hallwayEntered.add(i);
                 hallwayCloseTimes[i] = 1.0f;  // close 1 second after entry
+
+                // Spawn shadow 1 tile inward from the far end, running toward the door.
+                // Always spawn (even if one is running) so every hallway entry is guaranteed.
+                // Offset 1 tile inward so the shadow starts clear of the far wall's zBuffer.
+                double farX = ep[2] + 0.5, farY = ep[3] + 0.5;
+                double endX = ep[0] + 0.5, endY = ep[1] + 0.5;
+                double fullDist = Math.hypot(endX - farX, endY - farY);
+                if (fullDist > 2.0) {
+                    double nx = (endX - farX) / fullDist, ny = (endY - farY) / fullDist;
+                    double startX = farX + nx, startY = farY + ny; // 1 tile toward door
+                    double dist = fullDist - 1.0;
+                    double speed = 20.0;
+                    renderer.setShadowFigure(startX, startY, nx * speed, ny * speed, dist);
+                }
             }
         }
     }
-
 
     // ── Settings UI ───────────────────────────────────────────────────────────
 

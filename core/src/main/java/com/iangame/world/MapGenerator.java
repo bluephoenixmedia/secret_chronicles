@@ -348,13 +348,13 @@ public class MapGenerator {
             }
         }
 
-        // ── 18. Assign keys — 2 of the spawn-room cabinets chosen at random ──
+        // ── 18. Assign keys — each non-red cabinet has a 40% chance of containing a key.
+        //        Red cabinets are every 5th one (1-indexed), so skip those. ──
         java.util.Set<Integer> cabinetKeyIndices = new java.util.HashSet<>();
-        java.util.List<Integer> spawnCabOrder = new java.util.ArrayList<>();
-        for (int i = 0; i < SPAWN_CAB_COUNT; i++) spawnCabOrder.add(i);
-        java.util.Collections.shuffle(spawnCabOrder, rng);
-        cabinetKeyIndices.add(spawnCabOrder.get(0));
-        cabinetKeyIndices.add(spawnCabOrder.get(1));
+        for (int i = 0; i < cabList.size(); i++) {
+            boolean isRedCabinet = ((i + 1) % 5 == 0);
+            if (!isRedCabinet && rng.nextFloat() < 0.40f) cabinetKeyIndices.add(i);
+        }
 
         return new GeneratedMap(grid, lights,
                 tableList.toArray(new float[0][]),

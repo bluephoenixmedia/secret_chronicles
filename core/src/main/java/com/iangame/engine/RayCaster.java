@@ -47,6 +47,27 @@ public class RayCaster {
     private float[][] cabinetBoxes = new float[0][];
     private float[][] bloodSpots   = new float[0][2];
 
+    // ── Shadow figure (T-intersection scare) ─────────────────────────────────
+
+    private boolean shadowActive   = false;
+    private double  shadowX, shadowY;
+    private double  shadowVX, shadowVY;
+    /** Distance already covered; figure deactivates when it reaches maxDist. */
+    private double  shadowTraveled, shadowMaxDist;
+
+    /** Spawns a shadow figure at world position (x,y) moving at (vx,vy) tiles/s. */
+    public void setShadowFigure(double x, double y, double vx, double vy, double maxDist) {
+        shadowX        = x;
+        shadowY        = y;
+        shadowVX       = vx;
+        shadowVY       = vy;
+        shadowMaxDist  = maxDist;
+        shadowTraveled = 0;
+        shadowActive   = true;
+    }
+
+    public boolean isShadowFigureActive() { return shadowActive; }
+
     public void setBloodSpots(float[][] spots) { this.bloodSpots = spots; }
 
     /** Per-column depth buffer populated during wall casting. */
@@ -147,6 +168,15 @@ public class RayCaster {
                               * Math.min(1f, FLICKER_LERP * dt);
             if (flickerMult[i] < 0.05f) flickerMult[i] = 0.05f;
             if (flickerMult[i] > 1.00f) flickerMult[i] = 1.00f;
+        }
+
+        // Advance shadow figure
+        if (shadowActive) {
+            double speed = Math.sqrt(shadowVX * shadowVX + shadowVY * shadowVY);
+            shadowX        += shadowVX * dt;
+            shadowY        += shadowVY * dt;
+            shadowTraveled += speed    * dt;
+            if (shadowTraveled >= shadowMaxDist) shadowActive = false;
         }
 
         // Flashlight flicker — chance and dip depth increase as battery drains
@@ -473,10 +503,64 @@ public class RayCaster {
      * Pixels with alpha == 0 in the sprite texture are skipped.
      */
     private void renderSprites(Player player, int[] pixels) {
+        // ── Camera inverse determinant (shared by all sprite types) ──────────
+        double invDet = 1.0 / (player.planeX * player.dirY - player.dirX * player.planeY);
+
+        // ── Shadow figure billboard ───────────────────────────────────────────
+        if (shadowActive) {
+            double spX = shadowX - player.x;
+            double spY = shadowY - player.y;
+            double transformX = invDet * ( player.dirY   * spX - player.dirX   * spY);
+            double transformY = invDet * (-player.planeY * spX + player.planeX * spY);
+
+            if (transformY > 0.15) {
+                int screenX = (int)((screenW / 2.0) * (1.0 + transformX / transformY));
+                // Tall narrow billboard: 1.6× wall height, 0.4 units wide
+                int spriteH = (int)(screenH / transformY * 1.6);
+                int spriteW = Math.max(2, (int)(screenH / transformY * 0.4));
+
+                // Expand bounding box by 1px so the soft edge has room to blend
+                int drawStartY = Math.max(0,       halfH   - spriteH / 2 - 1);
+                int drawEndY   = Math.min(screenH, halfH   + spriteH / 2 + 1);
+                int drawStartX = Math.max(0,       screenX - spriteW / 2 - 1);
+                int drawEndX   = Math.min(screenW, screenX + spriteW / 2 + 1);
+
+                float halfW = spriteW / 2.0f;
+                float halfHf = spriteH / 2.0f;
+
+                for (int stripe = drawStartX; stripe < drawEndX; stripe++) {
+                    if (transformY >= zBuffer[stripe]) continue; // behind wall
+
+                    // Normalised horizontal position within the ellipse [-1, 1]
+                    float nx = (stripe - screenX) / halfW;
+
+                    for (int y = drawStartY; y < drawEndY; y++) {
+                        // Normalised vertical position [-1, 1]
+                        float ny = (y - halfH) / halfHf;
+
+                        // Ellipse distance squared; >1 means outside the shape
+                        float distSq = nx * nx + ny * ny;
+                        if (distSq >= 1.0f) continue;
+
+                        // Soft edge: full darkness at centre, fades to transparent at rim
+                        float alpha = (1.0f - distSq) * 0.94f;
+
+                        // Darken the existing scene pixel by alpha
+                        int src = pixels[y * screenW + stripe];
+                        int r = (int)(((src >> 24) & 0xFF) * (1f - alpha));
+                        int g = (int)(((src >> 16) & 0xFF) * (1f - alpha));
+                        int b = (int)(((src >>  8) & 0xFF) * (1f - alpha));
+                        pixels[y * screenW + stripe] = (r << 24) | (g << 16) | (b << 8) | 0xFF;
+                    }
+                }
+            }
+        }
+
+        // ── Table sprites ─────────────────────────────────────────────────────
         int n = tables.length;
         if (n == 0) return;
 
-        // ── Sort back-to-front (insertion sort — n is small) ─────────────────
+        // Sort back-to-front (insertion sort — n is small)
         double[] dist  = new double[n];
         int[]    order = new int[n];
         for (int i = 0; i < n; i++) {
@@ -492,9 +576,6 @@ public class RayCaster {
             while (j >= 0 && dist[order[j]] < keyD) { order[j + 1] = order[j--]; }
             order[j + 1] = key;
         }
-
-        // ── Camera inverse determinant ────────────────────────────────────────
-        double invDet = 1.0 / (player.planeX * player.dirY - player.dirX * player.planeY);
 
         int[] tex  = atlas.tableSprite;
         int   sz   = TextureAtlas.TEX_SIZE;

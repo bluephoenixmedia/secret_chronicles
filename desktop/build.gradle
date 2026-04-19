@@ -10,8 +10,9 @@ application {
     mainClass = 'com.iangame.desktop.DesktopLauncher'
 }
 
+sourceSets.main.resources.srcDirs = [rootProject.file('assets').path]
+
 run {
-    // Assets folder is the working directory so Gdx.files.internal() resolves correctly.
     workingDir = rootProject.file('assets')
 }
 
