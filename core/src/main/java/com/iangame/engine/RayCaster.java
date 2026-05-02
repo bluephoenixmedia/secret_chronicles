@@ -55,6 +55,9 @@ public class RayCaster {
     /** Distance already covered; figure deactivates when it reaches maxDist. */
     private double  shadowTraveled, shadowMaxDist;
 
+    /** Stationary shadow figures placed during lights-out events. */
+    private double[][] ambientShadows = new double[0][];
+
     /** Spawns a shadow figure at world position (x,y) moving at (vx,vy) tiles/s. */
     public void setShadowFigure(double x, double y, double vx, double vy, double maxDist) {
         shadowX        = x;
@@ -66,7 +69,23 @@ public class RayCaster {
         shadowActive   = true;
     }
 
-    public boolean isShadowFigureActive() { return shadowActive; }
+    public boolean isShadowFigureActive()              { return shadowActive; }
+    public double  getShadowX()                        { return shadowX; }
+    public double  getShadowY()                        { return shadowY; }
+    public void    setAmbientShadows(double[][] list)  { ambientShadows = list; }
+
+    /** Returns true when the shadow is active and inside the player's screen FOV. */
+    public boolean isShadowVisible(Player player) {
+        if (!shadowActive) return false;
+        double spX = shadowX - player.x;
+        double spY = shadowY - player.y;
+        double invDet = 1.0 / (player.planeX * player.dirY - player.dirX * player.planeY);
+        double transformY = invDet * (-player.planeY * spX + player.planeX * spY);
+        if (transformY <= 0.15) return false;
+        double transformX = invDet * (player.dirY * spX - player.dirX * spY);
+        int sx = (int)((screenW / 2.0) * (1.0 + transformX / transformY));
+        return sx >= 0 && sx < screenW;
+    }
 
     public void setBloodSpots(float[][] spots) { this.bloodSpots = spots; }
 
@@ -497,6 +516,49 @@ public class RayCaster {
 
     // ── Sprite rendering ──────────────────────────────────────────────────────
 
+    private void renderShadowBillboard(int[] pixels, Player player, double invDet, double wx, double wy) {
+        double spX = wx - player.x, spY = wy - player.y;
+        double transformX = invDet * ( player.dirY   * spX - player.dirX   * spY);
+        double transformY = invDet * (-player.planeY * spX + player.planeX * spY);
+        if (transformY <= 0.15) return;
+
+        int screenX = (int)((screenW / 2.0) * (1.0 + transformX / transformY));
+        int spriteH = (int)(screenH / transformY * 1.6);
+        int spriteW = Math.max(2, (int)(screenH / transformY * 0.7));
+
+        int drawStartY = Math.max(0,       halfH   - spriteH / 2 - 1);
+        int drawEndY   = Math.min(screenH, halfH   + spriteH / 2 + 1);
+        int drawStartX = Math.max(0,       screenX - spriteW / 2 - 1);
+        int drawEndX   = Math.min(screenW, screenX + spriteW / 2 + 1);
+
+        float halfW  = spriteW / 2.0f;
+        float halfHf = spriteH / 2.0f;
+
+        final float EYE_NY   = -0.42f, EYE_NX_L = -0.22f, EYE_NX_R = 0.22f, EYE_R_SQ = 0.05f;
+
+        for (int stripe = drawStartX; stripe < drawEndX; stripe++) {
+            if (transformY >= zBuffer[stripe]) continue;
+            float nx = (stripe - screenX) / halfW;
+            for (int y = drawStartY; y < drawEndY; y++) {
+                float ny     = (y - halfH) / halfHf;
+                float distSq = nx * nx + ny * ny;
+                float dL = (nx - EYE_NX_L) * (nx - EYE_NX_L) + (ny - EYE_NY) * (ny - EYE_NY);
+                float dR = (nx - EYE_NX_R) * (nx - EYE_NX_R) + (ny - EYE_NY) * (ny - EYE_NY);
+                float eyeGlow = 0f;
+                if (dL < EYE_R_SQ) eyeGlow = Math.max(eyeGlow, 1f - dL / EYE_R_SQ);
+                if (dR < EYE_R_SQ) eyeGlow = Math.max(eyeGlow, 1f - dR / EYE_R_SQ);
+                if (distSq >= 1.0f && eyeGlow <= 0f) continue;
+                float alpha = distSq < 1.0f ? (1.0f - distSq) * 0.94f : 0f;
+                int src = pixels[y * screenW + stripe];
+                int r = (int)(((src >> 24) & 0xFF) * (1f - alpha));
+                int g = (int)(((src >> 16) & 0xFF) * (1f - alpha));
+                int b = (int)(((src >>  8) & 0xFF) * (1f - alpha));
+                r = Math.min(255, r + (int)(eyeGlow * 235));
+                pixels[y * screenW + stripe] = (r << 24) | (g << 16) | (b << 8) | 0xFF;
+            }
+        }
+    }
+
     /**
      * Projects and draws every table billboard.
      * Sprites are sorted back-to-front; only columns closer than zBuffer are drawn.
@@ -507,54 +569,10 @@ public class RayCaster {
         double invDet = 1.0 / (player.planeX * player.dirY - player.dirX * player.planeY);
 
         // ── Shadow figure billboard ───────────────────────────────────────────
-        if (shadowActive) {
-            double spX = shadowX - player.x;
-            double spY = shadowY - player.y;
-            double transformX = invDet * ( player.dirY   * spX - player.dirX   * spY);
-            double transformY = invDet * (-player.planeY * spX + player.planeX * spY);
-
-            if (transformY > 0.15) {
-                int screenX = (int)((screenW / 2.0) * (1.0 + transformX / transformY));
-                // Tall narrow billboard: 1.6× wall height, 0.4 units wide
-                int spriteH = (int)(screenH / transformY * 1.6);
-                int spriteW = Math.max(2, (int)(screenH / transformY * 0.4));
-
-                // Expand bounding box by 1px so the soft edge has room to blend
-                int drawStartY = Math.max(0,       halfH   - spriteH / 2 - 1);
-                int drawEndY   = Math.min(screenH, halfH   + spriteH / 2 + 1);
-                int drawStartX = Math.max(0,       screenX - spriteW / 2 - 1);
-                int drawEndX   = Math.min(screenW, screenX + spriteW / 2 + 1);
-
-                float halfW = spriteW / 2.0f;
-                float halfHf = spriteH / 2.0f;
-
-                for (int stripe = drawStartX; stripe < drawEndX; stripe++) {
-                    if (transformY >= zBuffer[stripe]) continue; // behind wall
-
-                    // Normalised horizontal position within the ellipse [-1, 1]
-                    float nx = (stripe - screenX) / halfW;
-
-                    for (int y = drawStartY; y < drawEndY; y++) {
-                        // Normalised vertical position [-1, 1]
-                        float ny = (y - halfH) / halfHf;
-
-                        // Ellipse distance squared; >1 means outside the shape
-                        float distSq = nx * nx + ny * ny;
-                        if (distSq >= 1.0f) continue;
-
-                        // Soft edge: full darkness at centre, fades to transparent at rim
-                        float alpha = (1.0f - distSq) * 0.94f;
-
-                        // Darken the existing scene pixel by alpha
-                        int src = pixels[y * screenW + stripe];
-                        int r = (int)(((src >> 24) & 0xFF) * (1f - alpha));
-                        int g = (int)(((src >> 16) & 0xFF) * (1f - alpha));
-                        int b = (int)(((src >>  8) & 0xFF) * (1f - alpha));
-                        pixels[y * screenW + stripe] = (r << 24) | (g << 16) | (b << 8) | 0xFF;
-                    }
-                }
-            }
-        }
+        if (shadowActive)
+            renderShadowBillboard(pixels, player, invDet, shadowX, shadowY);
+        for (double[] s : ambientShadows)
+            renderShadowBillboard(pixels, player, invDet, s[0], s[1]);
 
         // ── Table sprites ─────────────────────────────────────────────────────
         int n = tables.length;

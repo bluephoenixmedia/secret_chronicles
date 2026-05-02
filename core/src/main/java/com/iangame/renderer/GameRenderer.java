@@ -370,7 +370,11 @@ public class GameRenderer implements Disposable {
         rayCaster.setShadowFigure(x, y, vx, vy, maxDist);
     }
 
-    public boolean isShadowFigureActive() { return rayCaster.isShadowFigureActive(); }
+    public boolean isShadowFigureActive()             { return rayCaster.isShadowFigureActive(); }
+    public boolean isShadowVisible(com.iangame.player.Player player) { return rayCaster.isShadowVisible(player); }
+    public double  getShadowX()                       { return rayCaster.getShadowX(); }
+    public double  getShadowY()                       { return rayCaster.getShadowY(); }
+    public void    setAmbientShadows(double[][] list) { rayCaster.setAmbientShadows(list); }
 
     public void drawRedTint(float level) {
         if (level <= 0f) return;

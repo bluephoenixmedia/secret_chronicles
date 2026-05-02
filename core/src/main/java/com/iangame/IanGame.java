@@ -98,6 +98,22 @@ public class IanGame extends ApplicationAdapter {
     private float[] hallwayCloseTimes = new float[0];
     /** Indices of hallways whose entry has already been detected. */
     private java.util.Set<Integer> hallwayEntered = new java.util.HashSet<>();
+    /** True after the player has entered at least one hallway (shadow skipped on first entry). */
+    private boolean hallwayEnteredOnce = false;
+    /** When true the player cannot move (freeze-scare event). */
+    private boolean playerFrozen          = false;
+    private float   playerFreezeTimer     = 0f;
+    /** Duration to freeze when the player enters the hallway of a slow-shadow event; 0 = none pending. */
+    private float   pendingFreezeOnSight  = 0f;
+    /** Hallway index associated with a pending freeze, or -1 if none. */
+    private int     pendingFreezeHallwayIdx = -1;
+    /** Static overlay intensity driven by shadow proximity (0 = none, 1 = full). */
+    private float      shadowProximityStatic   = 0f;
+    /** Live positions of lights-out ambient shadows; mutated each frame so the renderer tracks them. */
+    private double[][] lightsOutShadowPositions = new double[0][];
+    private static final float AMBIENT_SHADOW_SPEED = 4.5f;
+    /** Countdown after a shadow touches the player; glitches screen then respawns. */
+    private float      shadowTouchTimer        = 0f;
     private java.util.Set<Integer> cabinetKeyIndices = new java.util.HashSet<>();
     private java.util.Set<Integer> lootedCabinets    = new java.util.HashSet<>();
     /** Index of the cabinet whose inventory is currently open, or -1 if none. */
@@ -112,10 +128,17 @@ public class IanGame extends ApplicationAdapter {
 
     private boolean infoTextsEnabled = true;
 
-    // Settings overlay (visible when cursor is released)
-    private Stage  settingsStage;
-    private Stage  gameOverStage;
-    private Skin   skin;
+    // Title-screen demo scene
+    private GameMap     demoMap;
+    private Player      demoPlayer;
+    private DoorManager demoDoorManager;
+
+    // UI stages
+    private Stage   titleStage;
+    private Stage   settingsStage;
+    private Stage   gameOverStage;
+    private boolean onTitleScreen = true;
+    private Skin    skin;
     private Label  valueLabel;
     private Label  infoToggleLabel;
     private Label  minimapToggleLabel;
@@ -124,10 +147,24 @@ public class IanGame extends ApplicationAdapter {
 
     @Override
     public void create() {
+        renderer = new GameRenderer();
+
+        bgMusic = loadMusic("sounds/music/SCSOUNDTRCK1.mp3");
+        if (bgMusic != null) { bgMusic.setLooping(true); bgMusic.setVolume(0.6f); }
+
+        buildSettingsUI();
+        buildGameOverUI();
+        buildTitleUI();
+        initDemoScene();
+        Gdx.input.setInputProcessor(titleStage);
+        Gdx.input.setCursorCatched(false);
+        Gdx.app.log("IanGame", "Started — LibGDX " + com.badlogic.gdx.Version.VERSION);
+    }
+
+    private void startGame() {
         MapGenerator.GeneratedMap gen = MapGenerator.generate(new java.util.Random());
         map           = new GameMap(gen.grid);
         player        = new Player(gen.spawnX, gen.spawnY);
-        renderer      = new GameRenderer();
         doorManager   = new DoorManager(map);
         tables        = gen.tables;
         cabinetBoxes  = gen.cabinetBoxes;
@@ -143,24 +180,32 @@ public class IanGame extends ApplicationAdapter {
         java.util.Arrays.fill(hallwayCloseTimes, -1f);
         lastPlayerX = player.x;
         lastPlayerY = player.y;
-
-        bgMusic = loadMusic("sounds/music/SCSOUNDTRCK1.mp3");
-        if (bgMusic != null) {
-            bgMusic.setLooping(true);
-            bgMusic.setVolume(0.6f);
-            bgMusic.play();
-        }
-
-        buildSettingsUI();
-        buildGameOverUI();
+        onTitleScreen = false;
+        if (bgMusic != null) bgMusic.play();
         Gdx.input.setInputProcessor(settingsStage);
         Gdx.input.setCursorCatched(true);
-        Gdx.app.log("IanGame", "Game started — LibGDX " + com.badlogic.gdx.Version.VERSION);
     }
 
     @Override
     public void render() {
         float dt = Gdx.graphics.getDeltaTime();
+
+        if (onTitleScreen) {
+            demoPlayer.rotate(0.08, dt);
+            renderer.update(dt);
+            boolean minimapWas = renderer.isShowMinimap();
+            renderer.setShowMinimap(false);
+            renderer.render(demoPlayer, demoMap, demoDoorManager);
+            renderer.setShowMinimap(minimapWas);
+            titleStage.act(dt);
+            titleStage.draw();
+            if (Gdx.input.getInputProcessor() == settingsStage) {
+                settingsStage.act(dt);
+                settingsStage.draw();
+            }
+            return;
+        }
+
         timeSinceStart += dt;
 
         // Red cabinet click — activate pytyvo, begin fading static, spawn blood
@@ -225,6 +270,24 @@ public class IanGame extends ApplicationAdapter {
 
         doorManager.update(dt);
         checkHallwayEntry(dt);
+        // Freeze when the player physically steps into the hallway of a slow-shadow event
+        if (pendingFreezeOnSight > 0f && pendingFreezeHallwayIdx >= 0) {
+            int[] ep = hallwayEndpoints[pendingFreezeHallwayIdx];
+            double dirX = ep[2] - ep[0], dirY = ep[3] - ep[1];
+            double len  = Math.hypot(dirX, dirY);
+            double proj = ((player.x - (ep[0] + 0.5)) * (dirX / len)
+                         + (player.y - (ep[1] + 0.5)) * (dirY / len));
+            if (proj > 0.5) {
+                playerFrozen            = true;
+                playerFreezeTimer       = pendingFreezeOnSight;
+                pendingFreezeOnSight    = 0f;
+                pendingFreezeHallwayIdx = -1;
+            }
+        }
+        if (playerFrozen) {
+            playerFreezeTimer -= dt;
+            if (playerFreezeTimer <= 0f) playerFrozen = false;
+        }
         renderer.update(dt);
         renderer.render(player, map, doorManager);
 
@@ -273,11 +336,14 @@ public class IanGame extends ApplicationAdapter {
             lightsOutAt    = timeSinceStart;
             renderer.setLightsOut(true);
             if (bgMusic != null) bgMusic.pause();
+            spawnLightsOutAmbientShadows();
         }
         if (!gameOver && lightsOut && (timeSinceStart - lightsOutAt) >= 10f) {
             lightsOut = false;
             lightsRestoredAt = timeSinceStart;
             renderer.setLightsOut(false);
+            lightsOutShadowPositions = new double[0][];
+            renderer.setAmbientShadows(lightsOutShadowPositions);
             if (bgMusic != null) bgMusic.play();
             if (flickerRoomIdx >= 0) renderer.setRoomFlickerIntense(flickerRoomIdx, false);
             doorManager.setLockOpen(false);
@@ -328,12 +394,61 @@ public class IanGame extends ApplicationAdapter {
             if (!pytyvoFired) renderer.drawRedTint(staticLevel * 0.45f);
             renderer.drawStaticOverlay(staticLevel, pytyvoFired);
         }
+
+        // Glitch sequence after shadow touch — freeze player, blast static, then respawn
+        if (shadowTouchTimer > 0f) {
+            shadowTouchTimer -= dt;
+            renderer.drawStaticOverlay(0.6f + (float)(Math.random() * 0.4f), false);
+            renderer.drawFadeOverlay();
+            if (shadowTouchTimer <= 0f) restartGame();
+            return;
+        }
+
+        // Move lights-out ambient shadows toward the player
+        for (double[] s : lightsOutShadowPositions) {
+            double adx = player.x - s[0], ady = player.y - s[1];
+            double adist = Math.sqrt(adx * adx + ady * ady);
+            if (adist < 0.9) { triggerShadowTouch(); return; }
+            double spd = AMBIENT_SHADOW_SPEED * dt;
+            s[0] += (adx / adist) * spd;
+            s[1] += (ady / adist) * spd;
+        }
+
+        // Shadow proximity — static builds as any shadow closes in; touch triggers glitch
+        double closestShadowDist = Double.MAX_VALUE;
+        if (renderer.isShadowFigureActive()) {
+            double dx = renderer.getShadowX() - player.x;
+            double dy = renderer.getShadowY() - player.y;
+            double dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < 0.9) { triggerShadowTouch(); return; }
+            closestShadowDist = Math.min(closestShadowDist, dist);
+        }
+        for (double[] s : lightsOutShadowPositions) {
+            double dx = s[0] - player.x, dy = s[1] - player.y;
+            closestShadowDist = Math.min(closestShadowDist, Math.sqrt(dx * dx + dy * dy));
+        }
+        if (closestShadowDist < Double.MAX_VALUE) {
+            final double STATIC_START = 6.0;
+            shadowProximityStatic = (float) Math.max(0.0, Math.min(1.0, 1.0 - closestShadowDist / STATIC_START));
+        } else {
+            shadowProximityStatic = Math.max(0f, shadowProximityStatic - dt * 2f);
+        }
+        if (shadowProximityStatic > 0f)
+            renderer.drawStaticOverlay(shadowProximityStatic, false);
+
         renderer.drawFadeOverlay();
+    }
+
+    /** Called when any shadow reaches the player — starts the glitch-then-respawn sequence. */
+    private void triggerShadowTouch() {
+        playerFrozen     = true;
+        shadowTouchTimer = 1.2f;
     }
 
     @Override
     public void resize(int width, int height) {
         renderer.resize(width, height);
+        titleStage.getViewport().update(width, height, true);
         settingsStage.getViewport().update(width, height, true);
         gameOverStage.getViewport().update(width, height, true);
     }
@@ -342,6 +457,7 @@ public class IanGame extends ApplicationAdapter {
     public void dispose() {
         if (bgMusic != null) { bgMusic.stop(); bgMusic.dispose(); }
         renderer.dispose();
+        titleStage.dispose();
         settingsStage.dispose();
         gameOverStage.dispose();
         skin.dispose();
@@ -355,6 +471,9 @@ public class IanGame extends ApplicationAdapter {
             if (Gdx.input.isCursorCatched()) Gdx.input.setCursorCatched(false);
             else Gdx.app.exit();
         }
+
+        // All movement and look are blocked during a freeze scare.
+        if (playerFrozen) return;
 
         // Forward / backward
         if (Gdx.input.isKeyPressed(Keys.W) || Gdx.input.isKeyPressed(Keys.UP))
@@ -402,6 +521,25 @@ public class IanGame extends ApplicationAdapter {
                 // Toggle cabinet inventory open/closed
                 openCabinetIndex = (openCabinetIndex == nearCab) ? -1 : nearCab;
             } else {
+                // Scan for the door about to be opened.
+                int[] hdoor = findHallwayDoorInFront();
+                if (hdoor != null) {
+                    int hi = hdoor[2];
+                    if (!hallwayEntered.contains(hi)) {
+                        hallwayEntered.add(hi);
+                        hallwayCloseTimes[hi] = 2.0f;
+                        if (!hallwayEnteredOnce) {
+                            hallwayEnteredOnce = true;
+                        } else {
+                            double roll = Math.random();
+                            if (roll < 0.15) {
+                                spawnSlowHallwayShadow(hi);  // freeze + very slow shadow (15%)
+                            } else if (roll < 0.75) {
+                                spawnHallwayShadow(hi);      // slow shadow (60%)
+                            }
+                        }
+                    }
+                }
                 doorManager.tryInteract(player.x, player.y, player.dirX, player.dirY);
                 doorEverInteracted = true;
             }
@@ -651,6 +789,15 @@ public class IanGame extends ApplicationAdapter {
         hallwayEndpoints  = gen.hallwayEndpoints;
         hallwayCloseTimes = new float[hallwayEndpoints.length];
         hallwayEntered    = new java.util.HashSet<>();
+        hallwayEnteredOnce = false;
+        playerFrozen          = false;
+        playerFreezeTimer     = 0f;
+        pendingFreezeOnSight    = 0f;
+        pendingFreezeHallwayIdx = -1;
+        shadowProximityStatic    = 0f;
+        shadowTouchTimer         = 0f;
+        lightsOutShadowPositions = new double[0][];
+        renderer.setAmbientShadows(lightsOutShadowPositions);
         java.util.Arrays.fill(hallwayCloseTimes, -1f);
         lootedCabinets    = new java.util.HashSet<>();
         openCabinetIndex  = -1;
@@ -694,58 +841,133 @@ public class IanGame extends ApplicationAdapter {
         Gdx.input.setInputProcessor(settingsStage);
     }
 
-    // ── Hallway entry / end detection ────────────────────────────────────────
+    // ── Hallway door / shadow helpers ────────────────────────────────────────
+
+    private void checkHallwayEntry(float dt) {
+        // Hallway doors no longer lock on entry.
+    }
+
+    /** Places stationary shadow figures at the midpoints of 3 random hallways when lights go out. */
+    private void spawnLightsOutAmbientShadows() {
+        int total = hallwayEndpoints.length;
+        if (total == 0) return;
+        int count = Math.min(3, total);
+        // Shuffle indices to pick 3 unique random hallways
+        int[] indices = new int[total];
+        for (int i = 0; i < total; i++) indices[i] = i;
+        java.util.Random rng = new java.util.Random();
+        for (int i = total - 1; i > 0; i--) {
+            int j = rng.nextInt(i + 1);
+            int tmp = indices[i]; indices[i] = indices[j]; indices[j] = tmp;
+        }
+        lightsOutShadowPositions = new double[count][2];
+        for (int k = 0; k < count; k++) {
+            int[] ep = hallwayEndpoints[indices[k]];
+            lightsOutShadowPositions[k][0] = (ep[0] + ep[2]) / 2.0 + 0.5;
+            lightsOutShadowPositions[k][1] = (ep[1] + ep[3]) / 2.0 + 0.5;
+        }
+        renderer.setAmbientShadows(lightsOutShadowPositions);
+    }
 
     /**
-     * Detects when the player steps into an exterior hallway and schedules the
-     * door to close 1 second later.
+     * Scans in front of the player (same range as DoorManager.tryInteract) for a
+     * door that belongs to a hallway endpoint.  Returns {col, row, hallwayIndex}
+     * or null if none found.
      */
-    private void checkHallwayEntry(float dt) {
-        for (int i = 0; i < hallwayEndpoints.length; i++) {
-            int[] ep = hallwayEndpoints[i];   // {doorCol, doorRow, endCol, endRow}
-
-            // Fire the pending close+lock once the timer expires.
-            if (hallwayCloseTimes[i] >= 0f) {
-                hallwayCloseTimes[i] -= dt;
-                if (hallwayCloseTimes[i] <= 0f) {
-                    doorManager.lockDoor(ep[0], ep[1]);   // closes and permanently locks
-                    renderer.setLockedDoors(doorManager.getLockedDoorKeys());
-                    hallwayCloseTimes[i] = -1f;
-                }
-                continue;
-            }
-
-            if (hallwayEntered.contains(i)) continue;
-
-            // Derive the hallway direction from door → end.
-            int dirR = Integer.signum(ep[3] - ep[1]);
-            int dirC = Integer.signum(ep[2] - ep[0]);
-
-            // Component of player offset along and across the hallway axis.
-            double offR = player.y - (ep[1] + 0.5);
-            double offC = player.x - (ep[0] + 0.5);
-            double depth = offR * dirR + offC * dirC;   // positive = inside hallway
-            double lat   = Math.abs(offR * dirC - offC * dirR); // perpendicular
-
-            if (depth > 0.6 && depth < 4.0 && lat < 1.2) {
-                hallwayEntered.add(i);
-                hallwayCloseTimes[i] = 1.0f;  // close 1 second after entry
-
-                // Spawn shadow 1 tile inward from the far end, running toward the door.
-                // Always spawn (even if one is running) so every hallway entry is guaranteed.
-                // Offset 1 tile inward so the shadow starts clear of the far wall's zBuffer.
-                double farX = ep[2] + 0.5, farY = ep[3] + 0.5;
-                double endX = ep[0] + 0.5, endY = ep[1] + 0.5;
-                double fullDist = Math.hypot(endX - farX, endY - farY);
-                if (fullDist > 2.0) {
-                    double nx = (endX - farX) / fullDist, ny = (endY - farY) / fullDist;
-                    double startX = farX + nx, startY = farY + ny; // 1 tile toward door
-                    double dist = fullDist - 1.0;
-                    double speed = 20.0;
-                    renderer.setShadowFigure(startX, startY, nx * speed, ny * speed, dist);
-                }
+    private int[] findHallwayDoorInFront() {
+        for (float dist = 0.4f; dist <= 1.6f; dist += 0.4f) {
+            int col = (int)(player.x + player.dirX * dist);
+            int row = (int)(player.y + player.dirY * dist);
+            for (int i = 0; i < hallwayEndpoints.length; i++) {
+                int[] ep = hallwayEndpoints[i];
+                if (ep[0] == col && ep[1] == row) return new int[]{col, row, i};
             }
         }
+        return null;
+    }
+
+    /** Spawns a shadow at the far end of hallway i, running toward the door. Player is not frozen. */
+    private void spawnHallwayShadow(int i) {
+        pendingFreezeOnSight    = 0f;
+        pendingFreezeHallwayIdx = -1;
+        int[] ep = hallwayEndpoints[i];
+        double doorX = ep[0] + 0.5, doorY = ep[1] + 0.5;
+        double farX  = ep[2] + 0.5, farY  = ep[3] + 0.5;
+        double fullDist = Math.hypot(doorX - farX, doorY - farY);
+        if (fullDist > 2.0) {
+            double nx = (doorX - farX) / fullDist, ny = (doorY - farY) / fullDist;
+            double dist = fullDist - 1.0;
+            renderer.setShadowFigure(farX + nx, farY + ny, nx * 4.0, ny * 4.0, dist);
+        }
+    }
+
+    /** Spawns a very slow shadow; player freezes when they step into the hallway. */
+    private void spawnSlowHallwayShadow(int i) {
+        int[] ep = hallwayEndpoints[i];
+        double doorX = ep[0] + 0.5, doorY = ep[1] + 0.5;
+        double farX  = ep[2] + 0.5, farY  = ep[3] + 0.5;
+        double fullDist = Math.hypot(doorX - farX, doorY - farY);
+        if (fullDist > 2.0) {
+            double nx = (doorX - farX) / fullDist, ny = (doorY - farY) / fullDist;
+            double dist = fullDist - 1.0;
+            renderer.setShadowFigure(farX + nx, farY + ny, nx * 2.0, ny * 2.0, dist);
+            pendingFreezeOnSight    = (float)(dist / 2.0);
+            pendingFreezeHallwayIdx = i;
+        }
+    }
+
+    // ── Demo scene (title screen background) ─────────────────────────────────
+
+    private void initDemoScene() {
+        MapGenerator.GeneratedMap gen = MapGenerator.generate(new java.util.Random(7L));
+        demoMap         = new GameMap(gen.grid);
+        demoDoorManager = new DoorManager(demoMap);
+        demoPlayer      = new Player(gen.spawnX + 1.5, gen.spawnY + 1.5);
+        renderer.setWorldObjects(gen.lights, gen.tables, gen.cabinetBoxes);
+        for (int i = 0; i < Math.min(4, gen.lights.length); i++)
+            renderer.setRoomFlickerIntense(i, true);
+    }
+
+    // ── Title screen UI ───────────────────────────────────────────────────────
+
+    private void buildTitleUI() {
+        titleStage = new Stage(new ScreenViewport());
+
+        Label title   = new Label("SECRET CHRONICLES", skin);
+        Label play    = new Label("[ Play ]", skin);
+        Label options = new Label("[ Options ]", skin);
+        Label quit    = new Label("[ Quit ]", skin);
+
+        title.setFontScale(2.2f);
+        play.setFontScale(2.0f);
+        options.setFontScale(2.0f);
+        quit.setFontScale(2.0f);
+
+        play.addListener(new ClickListener() {
+            @Override public void clicked(InputEvent event, float x, float y) { startGame(); }
+        });
+        options.addListener(new ClickListener() {
+            @Override public void clicked(InputEvent event, float x, float y) {
+                Gdx.input.setInputProcessor(settingsStage);
+            }
+        });
+        quit.addListener(new ClickListener() {
+            @Override public void clicked(InputEvent event, float x, float y) { Gdx.app.exit(); }
+        });
+
+        Table panel = new Table();
+        panel.setBackground(new TextureRegionDrawable(skin.get("panel-bg", Texture.class)));
+        panel.pad(64);
+        panel.add(title).padBottom(80).width(360).left().row();
+        panel.add(play).padBottom(32).width(360).left().row();
+        panel.add(options).padBottom(32).width(360).left().row();
+        panel.add(quit).width(360).left();
+
+        Table root = new Table();
+        root.setFillParent(true);
+        root.left().padLeft(60);
+        root.add(panel).fillY().expandY();
+        titleStage.addActor(root);
     }
 
     // ── Settings UI ───────────────────────────────────────────────────────────
@@ -787,7 +1009,11 @@ public class IanGame extends ApplicationAdapter {
         closeX.addListener(new ClickListener() {
             @Override
             public void clicked(InputEvent event, float x, float y) {
-                Gdx.input.setCursorCatched(true);
+                if (onTitleScreen) {
+                    Gdx.input.setInputProcessor(titleStage);
+                } else {
+                    Gdx.input.setCursorCatched(true);
+                }
             }
         });
 

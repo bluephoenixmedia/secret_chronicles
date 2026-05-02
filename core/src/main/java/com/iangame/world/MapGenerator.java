@@ -163,16 +163,15 @@ public class MapGenerator {
         for (int gi = 0; gi < gapW.length; gi++) {
             int gStart = colStart[gi] + roomW[gi];   // first gap column
             int gEnd   = colStart[gi + 1];           // first column of right room
-            int doorC  = (gStart + gEnd) / 2;
 
             for (int r = 0; r < numRows; r++) {
                 int cr = hRow[r];
                 for (int col = gStart; col < gEnd; col++) grid[cr][col] = 0;
-                grid[cr][doorC] = 7;
 
+                // Doors at room-corridor boundaries so players see a door from inside each room
                 int lw = gStart - 1, rw = gEnd;
-                grid[cr][lw] = 0;
-                grid[cr][rw] = 0;
+                grid[cr][lw] = 7;
+                grid[cr][rw] = 7;
                 setFrame(grid, cr - 1, lw, mapH, mapW);
                 setFrame(grid, cr + 1, lw, mapH, mapW);
                 setFrame(grid, cr - 1, rw, mapH, mapW);
@@ -184,16 +183,15 @@ public class MapGenerator {
         for (int gi = 0; gi < gapH.length; gi++) {
             int gStart = rowStart[gi] + roomH[gi];   // first gap row
             int gEnd   = rowStart[gi + 1];           // first row of lower room
-            int doorR  = (gStart + gEnd) / 2;
 
             for (int c = 0; c < numCols; c++) {
                 int cc = vCol[c];
                 for (int row = gStart; row < gEnd; row++) grid[row][cc] = 0;
-                grid[doorR][cc] = 7;
 
+                // Doors at room-corridor boundaries
                 int tw = gStart - 1, bw = gEnd;
-                grid[tw][cc] = 0;
-                grid[bw][cc] = 0;
+                grid[tw][cc] = 7;
+                grid[bw][cc] = 7;
                 setFrame(grid, tw, cc - 1, mapH, mapW);
                 setFrame(grid, tw, cc + 1, mapH, mapW);
                 setFrame(grid, bw, cc - 1, mapH, mapW);
@@ -426,7 +424,7 @@ public class MapGenerator {
                 boolean usePerp1 = (sideRoomCount % 2 == 0);
                 int pr = usePerp1 ? perpR1 : perpR2;
                 int pc = usePerp1 ? perpC1 : perpC2;
-                carveSideRoom(grid, r, c, pr, pc, wallType, outLights, cabList, rng);
+                carveSideRoom(grid, r, c, pr, pc, wallType, outLights, outEndpoints, cabList, rng);
                 sideRoomCount++;
             }
         }
@@ -440,7 +438,7 @@ public class MapGenerator {
      */
     private static void carveSideRoom(int[][] grid, int hallR, int hallC,
                                       int perpR, int perpC, int wallType,
-                                      List<float[]> outLights,
+                                      List<float[]> outLights, List<int[]> outEndpoints,
                                       List<float[]> cabList, Random rng) {
         // Room layout in the depth (perpendicular) direction:
         //   d=1             entrance row: door at w=0, wallType at |w|>0
@@ -528,6 +526,10 @@ public class MapGenerator {
                     grid[rr][rc] = wallType;
             }
         }
+
+        // Record endpoint so IanGame can trigger the shadow figure when the player enters.
+        // Entry door is 1 tile into the side room; far end is the deepest corridor tile.
+        outEndpoints.add(new int[]{ hallC + perpC, hallR + perpR, lastCorC, lastCorR });
 
         // Light in the centre of the room.
         int midD = (ROOM_DEPTH / 2) + 2;
